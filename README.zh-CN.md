@@ -171,13 +171,15 @@ sudo dnf install "/path/to/minke-package.rpm"
 
 请在与目标安装包相同的操作系统和 CPU 架构上构建 Minke。构建产物位于 `out/make`，本项目不支持在单一宿主机上进行跨平台打包。
 
-当前源码使用 **DSH v0.1.7-rc.2**。源码提交和应用的补丁记录在 [runtime 配置](./config/harness-runtime.json)中；功能变化和迁移事项见 [DSH 升级说明](./docs/dsh-upgrade.md)。
+当前源码使用 **DSH v0.2.1-rc.2**。源码提交和应用的补丁记录在 [runtime 配置](./config/harness-runtime.json)中；功能变化和迁移事项见 [DSH 升级说明](./docs/dsh-upgrade.md)。
+
+macOS 和 Linux 下，Minke 启动时会读取一次登录 shell 的环境，让工具、模型服务和插件命令使用其中的 PATH 与代理设置。每次 shell 尝试限时 10 秒，失败后尝试其他系统 shell，全部失败则沿用启动环境；可通过 `MINKE_LOGIN_SHELL_TIMEOUT_MS` 设置毫秒数。已选 Data Home 和 Minke 的运行时参数保持不变。
 
 环境依赖：
 
 - 支持 submodule 的 Git，并确保已检出 `vendor/deepseek-harness` 子模块。
 - Node.js 24 或更高版本。
-- pnpm 11.7.0；执行脚本前需已安装仓库依赖。
+- pnpm 11.28.5；执行脚本前需已安装仓库依赖。
 - macOS：Apple Silicon 或 Intel Mac，并安装 Xcode Command Line Tools；`.dmg` 只能在 macOS 上构建。
 - Windows：Windows x64；如果原生依赖需要在本地编译，可能还需要安装 Visual Studio 2022 Build Tools，并选择 **Desktop development with C++** 工作负载。
 - Linux：Linux x64，并安装原生编译工具链、`fakeroot`、`dpkg`，以及 `rpm` 或 `rpm-build`。
@@ -196,7 +198,9 @@ pnpm run harness:stage
 pnpm start
 ```
 
-`pnpm start` 会刷新已准备 runtime 中的 Minke 集成，并启动开发应用。
+`pnpm start` 会刷新已准备 runtime 中的 Minke 集成，并启动开发应用。校验通过且内容无变化时，会跳过产品包构建和 runtime 刷新；构建产物有修改或缺失时会重新构建或修复。
+
+开发版将桌面设置和浏览器数据存入 `work/development/electron`，Harness 数据存入 `work/development/harness`，与正式版数据隔离；这些目录已被 Git 忽略。显式设置 `DSH_HOME` 可以覆盖开发版 Harness 目录，建议指定独立测试目录。
 
 为当前平台生成安装包：
 
@@ -206,13 +210,8 @@ pnpm make
 
 `pnpm make` 会先重新执行一次完整的 runtime 准备流程，再将当前平台的安装包生成到 `out/make`。
 
-macOS 钥匙串按代码签名识别应用。默认的本地包使用临时 ad-hoc 签名，每次源码
-变化后都可能被视为新应用；跨版本稳定授权必须使用同一个有效签名证书。可先用
-`security find-identity -v -p codesigning` 查找身份，然后在打包进程中设置：
+macOS 可选：使用同一个签名证书打包，可减少升级后的钥匙串重复授权提示：
 
 ```bash
 MINKE_MACOS_SIGN_IDENTITY="Developer ID Application: …" pnpm make
 ```
-
-CI 使用独立钥匙串时还可设置 `MINKE_MACOS_SIGN_KEYCHAIN`。不要把证书私钥或
-钥匙串密码提交到仓库。

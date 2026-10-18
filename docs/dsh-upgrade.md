@@ -1,23 +1,108 @@
 # DSH 升级说明
 
-当前源码使用 [`dsh-v0.1.7-rc.2`](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.7-rc.2)。已安装应用的内置版本以该应用的发布说明为准。
+当前源码使用 [`dsh-v0.2.1-rc.2`](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-rc.2)。已安装应用的内置版本以该应用的发布说明为准。
 
 ## 本次同步
 
-- 原生快捷键支持查看、搜索、自定义和恢复；进行中的对话可直接使用新启用的工具。
-- 改善归档筛选、长对话加载、文档预览、语法高亮和审批提示。
-- 修复异常退出后的插件安装、配置保存，以及部分长对话无法继续发送的问题。
+- 新增可选 DeepSeek Search / Fetch API，可在原生网页搜索设置中切换，保存后下一次调用生效。
+- 模型设置显示提供方认证信息，支持编辑自定义模型的推理档位；缺少凭据的模型路由在配置完成前隐藏。
+- 插件页增加内置功能预览和可选自定义市场，安装兼容性优先读取 `engines.dsh`；Host 版本变化时提示刷新页面。
+- 终端共享会话列表发现和重连刷新，改进长会话列表、工作详情折叠、子代理返回内容及 Linux 子进程管理。
 
-## 升级至 rc.2
+## 0.2.1-alpha.2 已同步功能
+
+- 新增工作目录切换工具与可选 Git Worktrees 插件；全局指令可读取共享 agents 目录中的 AGENTS.md。
+- 新增可选思考过程翻译、麦克风选择和通用字体设置；Official 插件页提供 Claude Code、Codex 组合包的按需安装入口。
+- 自动化任务恢复为内置功能；修复侧栏标签生命周期、计划模式退出条件、长行文件预览和子代理图片输入。
+- 修复模型流超时取消、后台工作流状态及插件资源释放问题；pi-ai 更新至 1.0.2，Office 预览引擎更新至 LibreOffice Kit 0.1.5。
+
+## 0.2.0 版本已同步功能
+
+- 模型选择器支持模糊搜索与键盘选择；更新 pi-ai 模型目录和提供商集成。
+- 修复切换会话或返回对话后计划审阅、计划全文打不开的问题；保留 Minke 标签页的草稿保护与内容实例。
+- 减少长对话渲染及状态动画开销，改善耗时、工作详情、字体与深色主题；插件安装指引区分已安装、不兼容及内置插件包升级。
+- 文件侧栏可在本地应用中打开当前目录并记住选择；修复新建终端菜单重复的 shell 项及 PowerShell 完成状态识别。
+- 自动化任务以明确的定时用户消息交付；Bash/PowerShell 工具提示先确认删除或移动的目标路径，Windows 权限诊断支持一次授权完成诊断与修复。
+- 主窗口中的输入框支持原生右键编辑菜单；选中会话或预览文本后可右键复制。菜单随当前语言切换，并根据当前编辑位置显示可用操作。
+
+## 侧栏与远程文件
+
+右侧标签栏的“＋”使用 DSH 原生 Start 页。工作区文件、终端和 Minke 卡片集中在该页，选择卡片后在当前分栏创建标签并替换 Start。分栏中的其他标签、浏览器状态和文件草稿继续保留；底栏仍使用原有的新建菜单。
+
+远程 Files 已接入 DSH 标准 API，共享现有登录、请求校验和取消流程。升级后若远程页面仍在运行旧版，请刷新页面再使用文件功能。
+
+## 桌面快捷键与更新
+
+快捷键统一在 Settings → General → Keyboard shortcuts 中查看和编辑，Minke 原快捷键设置页已移除。已有安装会迁移原有有效绑定，并保留旧配置文件；新安装采用 DSH 的新会话、设置和侧栏默认快捷键，Minke 命令面板默认为 Cmd/Ctrl+Shift+K，底栏默认为 Cmd/Ctrl+J。少数上游编辑器不支持的旧组合会提示重新设置。
+
+右侧栏快捷键与 DSH 一致，只作用于当前会话；从插件页返回会话后，可继续折叠和展开侧栏，保留原有标签内容。
+
+更新包下载并验证后，选择“稍后”会保留安装包，下次检查可继续打开，包括重启应用后。再次使用前会重新校验文件；下载失败可直接重试。唤醒和回到窗口时会按检查期限检查更新，网络失败后逐步延长重试间隔。
+
+## 桌面退出与恢复
+
+退出 Minke 时，如有运行任务、排队消息、后台作业或当前已启用的提醒，会先显示确认；无法读取任务状态时也会提示。取消后继续保留当前工作。系统关机、故障恢复退出采用对应的退出流程。
+
+启动、Host 或主页面发生致命故障时，可选择重启、退出；插件设置可用时还可选择以插件安全模式重启。安全模式不会卸载插件。诊断文件保存在桌面数据目录的 `logs` 子目录，最多保留 10 份；对话框会显示已保存文件的位置。退出过程中的失败也会记录，并标明发生阶段；退出时不会再弹出恢复对话框。
+
+从源码启动的开发版默认使用独立数据目录，详见 [README](../README.zh-CN.md#从源码构建)。
+
+桌面语言初始化读取已有的 DSH 语言偏好，自动模式遵循系统语言顺序；切换语言后原生菜单同步更新。原生窗口外观跟随 DSH 主题，包括系统模式和自定义主题。选择或拖入本地普通文件、文件夹时，输入框使用路径引用；图片和粘贴内容继续使用原生上传流程。
+
+## 升级至 0.2.1-rc.2
+
+**网页搜索**：在 Plugins → 内置插件配置 → 网页搜索中，可开启“启用新版 Web 搜索 API”，同时切换 Search 和 Fetch；关闭后恢复 Messages 搜索与本地 HTTP 抓取。新 API 使用 DeepSeek 凭据或账号鉴权，无需辅助模型请求。Minke 的独立免密钥搜索工具继续保留。
+
+**模型与凭据**：已保存的凭据优先于环境变量。指定了凭据但尚未配置的 pi-ai 路由不再列出模型；请在模型设置中配置密钥后重新打开选择器。已保存的模型选择保持原值，不会自动替换。自定义模型可编辑支持的推理档位。
+
+**自定义插件**：若清单声明 `engines.dsh`，其版本范围单独决定兼容性；缺少该字段时才回退到 DSH peerDependencies。`engines.dsh` 不支持 `workspace:`。读取不兼容插件详情的自定义客户端应把 `peers` 改为 `requirements`。
+
+**远程客户端**：普通浏览器登录无需重新配置。非页面 API 客户端应使用原生 `/connect` 交换 launch token，并明确是否参与提问等转发交互；参见[上游迁移说明](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.1-rc.2/docs/upgrade-guide/v0.2.1-alpha.2/operator-connect/guide.zh.md)。Host 升级后按页面提示刷新，再继续操作。
+
+**桌面字号快捷键**：Cmd/Ctrl + `=`、Cmd/Ctrl + `-` 一起调整正文、代码和终端字号。与其冲突的旧自定义快捷键会保留但不执行，请在 General → Keyboard shortcuts 中重新绑定。
+
+## 升级至 0.2.1-alpha.2
+
+**自动化任务**：调度器与任务页面重新内置，标准、Creator 和 PTC 预设提供时间上下文与提醒工具。无需再启用 Automation tasks 插件包，Minke 不再显示旧版的启用提示。上游会移除 Profile 中已退役的自动化插件包记录，保留已有任务；升级后请检查任务页面中的启用状态。
+
+**工作目录与指令**：会话支持通过 `working_directory` 查询和切换执行目录。自定义提示词中的 `{{cwd}}` 模板及子代理 provider 的旧 `config.cwd` 需要迁移；切换目录不会扩大文件写入权限。全局共享指令目录可通过 `DSH_AGENTS_HOME` 配置。
+
+**自定义插件与工具**：工具呈现方式仅接受 `native` 或 `ptc`，旧 `both` 配置需修改。子代理启动改为立即返回 child ID，自定义 SDK runtime 需支持 `session/wait`；Agent Team 消息改为直接送达目标 Inbox。自定义插件应检查[上游升级指南](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.2/docs/upgrade-guide)。
+
+**字体**：正文、代码与终端的字体和字号统一在 Settings → General 的字体选项中调整；Files 源码编辑器也跟随代码字号。右侧栏与底栏终端继续共享 Settings → Minke 中的行距和代码配色。旧终端字体按 Data Home 迁移一次，保留已有 DSH 字体设置；旧字号小于 10px 或大于 20px 时调整到最近边界。原值保留在桌面配置中，迁移记录位于当前 Data Home 的 `profiles/web/.minke-terminal-fonts.json`；修改过的 Profile 配置另存 `.before-minke-terminal-fonts` 备份。
+
+**Codex / Claude Code**：在 Plugins → Official 安装并启用，安装或更新后按界面提示重启。启用的组合包会提供全局委派工具，无需再复制预设手动启用；已有预设中的同名工具会覆盖全局工具，重复行可以移除。
+
+**IM 文件预览**：HTML 预览使用写入结果记录的绝对路径，支持会话切换目录后或同一回合在不同目录生成文件。历史记录只有相对路径且没有解析结果时，不生成预览链接。
+
+## 升级至 0.2.0-rc.2
+
+**桌面启动环境**：macOS/Linux 从桌面启动 Minke 时，会读取登录 shell 配置的 PATH、代理等环境，供 Harness、插件恢复、本地模型发现和远程访问使用。读取有超时和退出取消处理，失败时回退；选定的数据目录及 Minke 运行时参数不会被 shell 改写。超时设置见 [README](../README.zh-CN.md#从源码构建)。
+
+**模型目录**：pi-ai 更新至 0.87.1，部分旧模型 ID 已移除。若保存的模型不再可用，请在模型选择器中重新选择；Minke 不会自动替换用户配置。
+
+**异步提问**：新增可选实验模式，等待回答超时后可先处理独立工作，稍后回答仍能继续送达。默认保持阻塞式提问；需要启用时，通过 Agent Preset 编辑器把当前预设中 `tool-ask-user` 插件的 `mode` 设为 `timed`。详见[上游配置说明](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.0-rc.2/packages/interaction/tool-ask-user/README.md#use-this-package)。
+
+## 升级至 0.2.0-rc.1
+
+**自动化任务**：此版本曾改为可选插件包；0.2.1-alpha.2 已恢复内置，当前升级步骤见上文。
+
+**语音输入**：启用语音插件后，Minke 主页面可以申请麦克风权限。macOS 首次录音会请求系统授权；拒绝后可在系统设置的“隐私与安全性 → 麦克风”中调整 Minke 的权限。
+
+**工作详情**：新版调整初始显示方式，并将旧的 normal 模式映射为详细模式；可在对话界面调整偏好。
+
+**会话日志上报**：Settings → General 新增“使用官方模型 API 时上传会话日志”开关，保存后从下一次请求生效。它与反馈日志上报是两个独立设置。
+
+## 从 0.1.7-rc.2 之前升级时检查
 
 **会话与设置**：DSH 升级到 Session V4，并将旧 `settings.yaml` 设置迁入当前 Profile。升级前建议备份 Data Home；升级后的数据不适合交给旧版运行。Minke 保留原生 `llm-pi-ai` 配置入口，本地模型发现不会覆盖用户保存的模型配置。
 
 **自定义插件**：新版会检查 DSH 依赖版本，不兼容的插件会跳过并提示。更新插件的版本约束及接口适配；涉及 Agent Preset、设置、文件二进制读取的插件需检查上游迁移说明。Inspector 不再默认提供，可按需安装。
 
-**定时任务**：DSH 默认关闭定时任务与时间上下文；Minke 延续此前的启用配置，使用 DSH 自带的持久化任务服务。
-
 ## 此前同步的功能
 
+- DeepSeek 账号模型可直接使用原生网页搜索，无需额外搜索 API Key；修复工具调度失败后的续接、过期图片重传及 Safari 流式回复恢复。
+- 改善 Office/PDF 文本选中效果与深色主题开关对比度；无标题历史记录显示“Untitled”，重命名输入框留空；Creator 模式提供智能体体验技能。
 - DSH 原生 Plugins 页面支持安装、配置和实时启停插件。Creator 模式通过 Plugin Manager 安装持久插件，移除原来的 Cordis 动态定义和执行工具。
 - 对话回合结束后显示文件变更卡片，可在侧栏逐文件审阅；侧栏增加 Word、Excel、PowerPoint 预览，也可打开指定网址、Subagent 对话和提交的计划。
 - 工作区按目录层级分组。刷新可恢复侧栏布局、右侧栏与底栏的终端连接、网页地址和文件草稿；发送第一条消息前也能使用文件预览与终端。
@@ -34,7 +119,7 @@
 
 **模型列表**：默认列表移除 V4 Flash 和 V4 Flash Vision Exp；pi-ai 模型支持手动调整输入类型。
 
-**终端权限**：右侧栏和底栏均使用 DSH 用户终端，以系统用户权限运行，独立于 Agent 的沙箱模式；两处共享 Minke 的字体、行距和代码配色设置。
+**终端权限**：右侧栏和底栏均使用 DSH 用户终端，以系统用户权限运行，独立于 Agent 的沙箱模式；两处使用 General 字体设置，共享 Minke 的行距和代码配色。
 
 **CLI**：可通过 `dsh <profile>` 启动指定 Profile。
 
@@ -50,10 +135,10 @@
     enabled: false
 ```
 
-Data Home 的实际位置可在 Settings → Minke → Storage 中查看。保留文件内其他配置项。详见[上游日志上报说明](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.1.7-rc.2/packages/session/session-log-deepseek/README.md)。
+Data Home 的实际位置可在 Settings → Minke → Storage 中查看。保留文件内其他配置项；手动配置的覆盖项可能使界面开关无法修改。详见[上游日志上报说明](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.0-rc.2/packages/session/session-log-deepseek/README.md)。
 
 **自定义插件和配置**：PTC 包与服务统一改为 `ptc-runtime`，没有旧名称别名；Node PTC 在独立进程中执行，模型代码的 `process.env` 为空。旧 workflow 改为 `workflow-ptc`，内置 E2B 后端移除，Ralph 默认关闭。依赖这些功能的配置需要调整。
 
 **插件启动与恢复**：`agent/session-start` 被串行、异步的 `agent/created` 替代。可选插件启动失败不会阻止其他插件工作，必要插件失败仍会停止启动；热更新激活失败不再自动回滚全部修改。安全模式和 DSH 原生禁用操作均保留安装，修正配置后可以恢复启用。
 
-[完整上游变更](https://github.com/deepseek-ai/deepseek-harness/compare/dsh-v0.1.6-alpha.2...dsh-v0.1.7-rc.2)
+[本次上游变更](https://github.com/deepseek-ai/deepseek-harness/compare/dsh-v0.2.1-alpha.2...dsh-v0.2.1-rc.2)

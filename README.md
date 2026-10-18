@@ -190,13 +190,15 @@ Replace the example path with the downloaded package path.
 
 Build Minke on the same operating system and CPU architecture as the package you need. The build produces distributables for the current host under `out/make`; this project does not support cross-platform packaging from a single host.
 
-The current source uses **DSH v0.1.7-rc.2**. The source commit and applied patches are recorded in the [runtime configuration](./config/harness-runtime.json); see the [DSH upgrade notes (Chinese)](./docs/dsh-upgrade.md) for changes and migration details.
+The current source uses **DSH v0.2.1-rc.2**. The source commit and applied patches are recorded in the [runtime configuration](./config/harness-runtime.json); see the [DSH upgrade notes (Chinese)](./docs/dsh-upgrade.md) for changes and migration details.
+
+On macOS and Linux, Minke reads the login shell's environment once at startup so tools, model services, and plugin commands can use its PATH and proxy settings. Each shell attempt has a 10-second deadline; failures fall back to another system shell, then to the inherited environment. `MINKE_LOGIN_SHELL_TIMEOUT_MS` sets this deadline in milliseconds. Minke keeps the selected Data Home and its own runtime settings.
 
 Prerequisites:
 
 - Git with submodule support. The `vendor/deepseek-harness` submodule must be checked out.
 - Node.js 24 or newer.
-- pnpm 11.7.0, with the repository dependencies installed before running the scripts.
+- pnpm 11.28.5, with the repository dependencies installed before running the scripts.
 - macOS: an Apple Silicon or Intel Mac with Xcode Command Line Tools. The `.dmg` target can only be built on macOS.
 - Windows: a Windows x64 host. Visual Studio 2022 Build Tools with the **Desktop development with C++** workload may be needed if a native dependency must be compiled locally.
 - Linux: a Linux x64 host with a native build toolchain, `fakeroot`, `dpkg`, and either `rpm` or `rpm-build`.
@@ -215,7 +217,9 @@ Start Minke in development mode with:
 pnpm start
 ```
 
-`pnpm start` refreshes the Minke integration in the prepared runtime and launches the development app.
+`pnpm start` refreshes the Minke integration in the prepared runtime and launches the development app. Unchanged product builds and runtime refreshes are skipped after validation; modified or missing build outputs are rebuilt or repaired.
+
+Development uses `work/development/electron` for desktop settings and browser storage, and `work/development/harness` for Harness data. These directories are separate from installed Minke data and ignored by Git. An explicit `DSH_HOME` overrides the development Harness directory; use a dedicated test directory when setting it.
 
 Create the distributable package for the current platform with:
 
@@ -225,19 +229,12 @@ pnpm make
 
 `pnpm make` performs a full runtime stage again before writing the platform package to `out/make`.
 
-macOS Keychain identifies an app by its code signature. The default local
-package uses an ad-hoc signature and may be treated as a new app whenever its
-contents change; stable authorization across versions requires the same valid
-signing certificate. Find an installed identity with
-`security find-identity -v -p codesigning`, then provide it to the packaging
-process:
+Optional on macOS: reuse the same signing certificate to reduce repeated
+Keychain authorization prompts after upgrades:
 
 ```bash
 MINKE_MACOS_SIGN_IDENTITY="Developer ID Application: …" pnpm make
 ```
-
-Set `MINKE_MACOS_SIGN_KEYCHAIN` as well when CI uses a dedicated keychain.
-Never commit the certificate private key or keychain password.
 
 ## 中国用户
 
