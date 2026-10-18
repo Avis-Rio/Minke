@@ -11,9 +11,25 @@ async function verifyDesktopUpdatesUI({ window, rendererValue, waitFor, publish,
     privateFileOpen: typeof window.minkeDesktop.files.open,
   })`), { protocolVersion: 1, state: { phase: 'idle' }, privateUpdateCheck: 'undefined', privateFileOpen: 'undefined' });
 
+  // Narrow desktops start collapsed; DSH renders a badge there, not the full
+  // update action. Open the sidebar before exercising its interactive control.
+  if (await rendererValue(window, `() => !!document.querySelector('[data-sidebar-collapsed]')`)) {
+    await waitFor(() => rendererValue(window, `() => !!document.querySelector('button[aria-label="Open sidebar"]')`), 'native sidebar expand control');
+    await rendererValue(window, `() => { document.querySelector('button[aria-label="Open sidebar"]').click(); return true; }`);
+    await waitFor(() => rendererValue(window, `() => !document.querySelector('[data-sidebar-collapsed]')`), 'expanded sidebar for native update actions');
+  }
+
   const indicator = label => `button[aria-label=${JSON.stringify(label)}]`;
   const waitIndicator = label => waitFor(() => rendererValue(window,
-    `() => document.querySelector(${JSON.stringify(indicator(label))}) !== null`), `native update label ${label}`);
+    `() => document.querySelector(${JSON.stringify(indicator(label))}) !== null`), `native update label ${label}`).catch(async error => {
+      const state = await rendererValue(window, `async () => ({
+        viewport: { width: innerWidth, height: innerHeight },
+        collapsed: !!document.querySelector('[data-sidebar-collapsed]'),
+        update: await window.dshDesktop.updates.status(),
+        labels: [...document.querySelectorAll('button[aria-label], [role="img"][aria-label]')].map(element => element.getAttribute('aria-label')),
+      })`);
+      throw new Error(error.message + '; ui=' + JSON.stringify(state), { cause: error });
+    });
   publish({ phase: 'checking' });
   await waitIndicator('Checking for updates…');
   assert.equal(await rendererValue(window, `() => document.querySelector('button[aria-label="Checking for updates…"]').getAttribute('aria-disabled')`), 'true');

@@ -9,6 +9,10 @@ const { verifyWindowDrag, observeWindowDragRecall, verifyWindowDragRecall } = re
 
 /** Exercises the production renderer in a blank Session, before its header exists. */
 async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererValue, waitFor, workspace, readOpenedFilePaths }) {
+  // Window creation can be clamped to the runner's work area. The split-pane
+  // scenarios need the desktop viewport; narrow layouts are exercised below.
+  window.setContentSize(1280, 800);
+  await waitFor(() => rendererValue(window, `() => innerWidth === 1280 && innerHeight === 800`), 'desktop Sidebar viewport');
   await writeFile(join(workspace, 'sidebar-code.ts'), Array.from({ length: 180 }, (_, index) =>
     `export const value${index} = ${JSON.stringify('Native code preview '.repeat(16))};`).join('\n'));
   const pressEnter = () => {
@@ -48,12 +52,16 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
       const candidate = await rendererValue(window, `() => {
       const button = document.querySelectorAll(${JSON.stringify(selector)})[${index}];
       if (!button || !button.checkVisibility({ checkVisibilityCSS: true })) return false;
-      button.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
-      const rect = button.getBoundingClientRect();
-      const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
-      const hit = document.elementFromPoint(x, y);
-      if (!hit || !(hit === button || button.contains(hit))) return false;
-      return { x: Math.round(x), y: Math.round(y) };
+      // Edge alignment can leave a control behind a sticky settings header.
+      // Center an obscured target, then retain the real hit-test requirement.
+      for (const block of ['nearest', 'center']) {
+        button.scrollIntoView({ block, inline: 'nearest', behavior: 'instant' });
+        const rect = button.getBoundingClientRect();
+        const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+        const hit = document.elementFromPoint(x, y);
+        if (hit && (hit === button || button.contains(hit))) return { x: Math.round(x), y: Math.round(y) };
+      }
+      return false;
       }`);
       if (!candidate) return false;
       window.webContents.sendInputEvent({ type: 'mouseMove', ...candidate });
@@ -185,6 +193,8 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
     await click(switches);
     await waitFor(() => rendererValue(window, `() => document.querySelector('${switches}').getAttribute('aria-checked') === ${JSON.stringify(oldChecked)}
       && !document.querySelector('${switches}').disabled`), 'native Switch restores its setting');
+    // Reproduce the edge alignment seen in a shorter CI scrollport.
+    await rendererValue(window, `() => { document.querySelector('${fieldSelector}').scrollIntoView({ block: 'start', behavior: 'instant' }); return true; }`);
     await click(fieldSelector);
     const originalLineHeight = await rendererValue(window, `() => document.querySelector('${fieldSelector}').value`);
     // This isolated window has no application Edit menu; invoke its native command.
