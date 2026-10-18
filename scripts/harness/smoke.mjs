@@ -17,6 +17,7 @@ import {
   readHarnessRuntimeLayout,
 } from "../../desktop/main/harness-launch.ts";
 import { HarnessHostChannel } from "../../desktop/main/harness-host-channel.ts";
+import { parseMinkeHostCapabilities } from "../../packages/harness-overlay/src/minke-host-contract.ts";
 import { packagedApplicationLayout } from "../forge/application-layout.mjs";
 import {
   isCommandUnavailableResult,
@@ -370,18 +371,14 @@ async function fetchMinkeHostCapabilities(server) {
     "capabilities",
     {},
   );
-  if (
-    capabilities?.protocolVersion !== 4 ||
-    capabilities.files?.available !== true ||
-    capabilities.files?.write !== true ||
-    capabilities.tabs?.available !== true ||
-    capabilities.tabs?.embeddedWeb !== false
-  ) {
+  try {
+    return parseMinkeHostCapabilities(capabilities);
+  } catch (cause) {
     throw new Error(
       `Minke Host returned unexpected capabilities: ${JSON.stringify(capabilities)}`,
+      { cause },
     );
   }
-  return capabilities;
 }
 
 async function smokeMinkeApiTrust(server) {
