@@ -1,3 +1,4 @@
+import { Button, Checkbox, Input } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   useEffect,
   useState,
@@ -184,7 +185,7 @@ function LoadedDataHomeSettings({
                   {t("optionCustom")}
                 </span>
                 <span className="minke-data-home__custom-control">
-                  <input
+                  <Input
                     className="minke-data-home__input"
                     type="text"
                     value={customPath}
@@ -199,7 +200,7 @@ function LoadedDataHomeSettings({
                       setCustomPath(event.currentTarget.value);
                     }}
                   />
-                  <button
+                  <Button variant="outline"
                     type="button"
                     className="minke-data-home__button"
                     disabled={snapshot.busy}
@@ -208,7 +209,7 @@ function LoadedDataHomeSettings({
                     }}
                   >
                     {t("browse")}
-                  </button>
+                  </Button>
                 </span>
               </span>
             </label>
@@ -275,9 +276,9 @@ function LoadedDataHomeSettings({
           </div>
 
           <div className="minke-data-home__actions">
-            <button
+            <Button variant="primary"
               type="button"
-              className="minke-data-home__button minke-data-home__button--primary"
+              className="minke-data-home__button"
               disabled={
                 snapshot.busy || targetPath.trim().length === 0
               }
@@ -290,7 +291,7 @@ function LoadedDataHomeSettings({
                 : mode === "fresh"
                   ? t("reviewFresh")
                   : t("previewMerge")}
-            </button>
+            </Button>
           </div>
 
           {planMatches && snapshot.plan !== undefined && (
@@ -351,26 +352,18 @@ function LoadedDataHomeSettings({
                     : t("riskBody")}
                 </p>
               </div>
-              <label className="minke-data-home__acknowledge">
-                <input
-                  type="checkbox"
-                  checked={acknowledged}
-                  disabled={snapshot.busy || snapshot.scheduled}
-                  onChange={(event) => {
-                    setAcknowledged(event.currentTarget.checked);
-                  }}
-                />
-                <span>
-                  {snapshot.plan.mode === "fresh"
-                    ? t("freshRiskAccept")
-                    : t("riskAccept")}
-                </span>
-              </label>
-              <button
+              <Checkbox
+                className="minke-data-home__acknowledge"
+                checked={acknowledged}
+                disabled={snapshot.busy || snapshot.scheduled}
+                onChange={setAcknowledged}
+                label={snapshot.plan.mode === "fresh" ? t("freshRiskAccept") : t("riskAccept")}
+              />
+              <Button variant={snapshot.plan.mode === "fresh" ? "primary" : "outline"}
                 type="button"
                 className={
                   snapshot.plan.mode === "fresh"
-                    ? "minke-data-home__button minke-data-home__button--primary"
+                    ? "minke-data-home__button"
                     : "minke-data-home__button minke-data-home__button--danger"
                 }
                 disabled={
@@ -390,7 +383,7 @@ function LoadedDataHomeSettings({
                   : snapshot.plan.mode === "fresh"
                     ? t("activateFresh")
                     : t("migrate")}
-              </button>
+              </Button>
             </div>
           )}
 

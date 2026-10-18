@@ -7473,7 +7473,7 @@ test("Remote Hub uses grouped sidebar navigation and stable detail panels", asyn
   assert.match(cloudflareDialog, />Random or custom label</u);
   assert.match(
     cloudflareDialog,
-    /<button[^>]*class="minke-remote__regenerate"[^>]*aria-label="Generate random label"[^>]*title="Generate random label"[^>]*>[\s\S]*<svg/u,
+    /<button[^>]*class="[^"\n]*\bminke-remote__regenerate\b[^"\n]*"[^>]*aria-label="Generate random label"[^>]*title="Generate random label"[^>]*>[\s\S]*<svg/u,
   );
   assert.doesNotMatch(
     cloudflareDialog,
@@ -7486,7 +7486,7 @@ test("Remote Hub uses grouped sidebar navigation and stable detail panels", asyn
   );
   assert.match(
     cloudflareDialog,
-    /<button[^>]*class="minke-remote__help-trigger"[^>]*aria-label="Show base domain guidance"[^>]*aria-describedby="[^"]+"/u,
+    /<button[^>]*class="[^"\n]*\bminke-remote__help-trigger\b[^"\n]*"[^>]*aria-label="Show base domain guidance"[^>]*aria-describedby="[^"]+"/u,
   );
   assert.match(
     cloudflareDialog,

@@ -1,3 +1,4 @@
+import { Button, Input } from "@deepseek-ai/dsh-client-ui-primitives";
 import { mainSessionId, type HarnessSessionList } from "../core/sessions.ts";
 import {
   RadioTower,
@@ -307,8 +308,9 @@ export function RemoteHubAction({
     return runtime.registerSessionTrigger();
   }, [location, runtime]);
   return (
-    <button
+    <Button
       ref={triggerRef}
+      size="sm"
       type="button"
       data-minke-remote-hub-action
       data-location={location}
@@ -320,7 +322,7 @@ export function RemoteHubAction({
       onClick={() => runtime.open(triggerRef.current ?? undefined)}
     >
       <RemoteHeaderIcon />
-    </button>
+    </Button>
   );
 }
 
@@ -618,13 +620,13 @@ function WeixinChannel({
         </span>
         {weixin.state === "unlinked" && (
           <span className="minke-remote-hub__channel-controls">
-            <button
+            <Button variant="outline" size="sm"
               type="button"
               disabled={busy}
               onClick={startLink}
             >
               {busy ? t("busy") : t("connectWeixin")}
-            </button>
+            </Button>
           </span>
         )}
       </div>
@@ -681,7 +683,7 @@ function WeixinChannel({
                       {t("verificationCodeLabel")}
                     </label>
                     <div>
-                      <input
+                      <Input className="minke-remote-hub__input"
                         id={codeId}
                         type="text"
                         value={code}
@@ -697,14 +699,14 @@ function WeixinChannel({
                               .slice(0, 32),
                           )}
                       />
-                      <button
+                      <Button variant="outline"
                         type="submit"
                         disabled={
                           busy || !/^[0-9]{1,32}$/u.test(code)
                         }
                       >
                         {busy ? t("busy") : t("verifyCode")}
-                      </button>
+                      </Button>
                     </div>
                   </form>
                 )}
@@ -728,16 +730,16 @@ function WeixinChannel({
 
           <div className="minke-remote-hub__channel-actions">
             {canStart && (
-              <button
+              <Button variant="outline"
                 type="button"
                 disabled={busy}
                 onClick={startLink}
               >
                 {busy ? t("busy") : t("connectWeixin")}
-              </button>
+              </Button>
             )}
             {canReconnect && (
-              <button
+              <Button variant="outline"
                 type="button"
                 disabled={busy}
                 onClick={() => {
@@ -747,10 +749,10 @@ function WeixinChannel({
                 }}
               >
                 {busy ? t("busy") : t("reconnectWeixin")}
-              </button>
+              </Button>
             )}
             {weixin.state === "linking" && (
-              <button
+              <Button variant="outline"
                 type="button"
                 disabled={busy}
                 onClick={() => {
@@ -761,10 +763,10 @@ function WeixinChannel({
                 }}
               >
                 {busy ? t("busy") : t("cancelLink")}
-              </button>
+              </Button>
             )}
             {canUnlink && (
-              <button
+              <Button variant="outline"
                 type="button"
                 className="minke-remote-hub__button--danger"
                 disabled={busy}
@@ -775,18 +777,17 @@ function WeixinChannel({
                 }}
               >
                 {t("unlinkWeixin")}
-              </button>
+              </Button>
             )}
             {canReset && !confirmReset && (
-              <button
+              <Button
                 ref={resetTriggerRef}
                 type="button"
-                className="minke-remote-hub__button--quiet"
                 disabled={busy}
                 onClick={() => setConfirmReset(true)}
               >
                 {t(resetGateway ? "resetGateway" : "resetLocal")}
-              </button>
+              </Button>
             )}
           </div>
           {confirmReset && (
@@ -802,7 +803,7 @@ function WeixinChannel({
                 )}
               </p>
               <div className="minke-remote-hub__channel-actions">
-                <button
+                <Button variant="outline"
                   ref={resetConfirmRef}
                   type="button"
                   disabled={busy}
@@ -821,15 +822,14 @@ function WeixinChannel({
                           ? "confirmResetGateway"
                           : "confirmResetLocal",
                       )}
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
-                  className="minke-remote-hub__button--quiet"
                   disabled={busy}
                   onClick={() => setConfirmReset(false)}
                 >
                   {t("keepLocalData")}
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -1297,7 +1297,7 @@ function BotChannel({
               </p>
               <small>{t("copyBotTokenWarning")}</small>
             </div>
-            <button
+            <Button variant="outline" size="sm"
               type="button"
               disabled={busy}
               onClick={copyToken}
@@ -1312,7 +1312,7 @@ function BotChannel({
                       ? "copyBotTokenError"
                       : "copyBotToken",
               )}
-            </button>
+            </Button>
           </div>
         )}
         {(channel.state === "pairing" ||
@@ -1374,7 +1374,7 @@ function BotChannel({
                     </time>
                   </p>
                   <div className="minke-remote-hub__channel-actions">
-                    <button
+                    <Button variant="outline"
                       type="button"
                       disabled={busy}
                       onClick={() =>
@@ -1385,10 +1385,9 @@ function BotChannel({
                       {busy
                         ? t("busy")
                         : t("approveBotPairing")}
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                       type="button"
-                      className="minke-remote-hub__button--quiet"
                       disabled={busy}
                       onClick={() =>
                         dismissPairing(
@@ -1396,7 +1395,7 @@ function BotChannel({
                         )}
                     >
                       {t("dismissBotPairing")}
-                    </button>
+                    </Button>
                   </div>
                 </div>
               ))}
@@ -1438,7 +1437,7 @@ function BotChannel({
               ).replace("{provider}", providerLabel)}
             </label>
             <div>
-              <input
+              <Input className="minke-remote-hub__input"
                 id={tokenId}
                 type="password"
                 value={token}
@@ -1453,7 +1452,7 @@ function BotChannel({
                 onChange={(event) =>
                   setToken(event.currentTarget.value)}
               />
-              <button
+              <Button variant="outline"
                 type="submit"
                 disabled={busy || !tokenValid}
               >
@@ -1465,11 +1464,10 @@ function BotChannel({
                         "{provider}",
                         providerLabel,
                       )}
-              </button>
+              </Button>
               {editingToken && (
-                <button
+                <Button
                   type="button"
-                  className="minke-remote-hub__button--quiet"
                   disabled={busy}
                   onClick={() => {
                     setToken("");
@@ -1477,7 +1475,7 @@ function BotChannel({
                   }}
                 >
                   {t("cancelTokenUpdate")}
-                </button>
+                </Button>
               )}
             </div>
             <small id={tokenHelpId}>
@@ -1503,7 +1501,7 @@ function BotChannel({
               )}
             </label>
             <div>
-              <input
+              <Input className="minke-remote-hub__input"
                 id={proxyId}
                 type="url"
                 value={proxyUrl}
@@ -1517,14 +1515,14 @@ function BotChannel({
                 onChange={(event) =>
                   setProxyUrl(event.currentTarget.value)}
               />
-              <button
+              <Button variant="outline"
                 type="submit"
                 disabled={
                   busy || !proxyValid || !proxyChanged
                 }
               >
                 {busy ? t("busy") : t("applyTelegramProxy")}
-              </button>
+              </Button>
             </div>
             <small id={proxyHelpId}>
               {t(
@@ -1538,27 +1536,26 @@ function BotChannel({
 
         <div className="minke-remote-hub__channel-actions">
           {canReconnect && !editingToken && (
-            <button
+            <Button variant="outline"
               type="button"
               disabled={busy}
               onClick={reconnect}
             >
               {busy ? t("busy") : t("reconnectBot")}
-            </button>
+            </Button>
           )}
           {canDisconnect && !editingToken && (
-            <button
+            <Button variant="outline"
               type="button"
               disabled={busy}
               onClick={disconnect}
             >
               {busy ? t("busy") : t("disconnectBot")}
-            </button>
+            </Button>
           )}
           {canUpdateToken && (
-            <button
+            <Button
               type="button"
-              className="minke-remote-hub__button--quiet"
               disabled={busy}
               onClick={() => {
                 setConfirmClearToken(false);
@@ -1566,12 +1563,12 @@ function BotChannel({
               }}
             >
               {t("updateBotToken")}
-            </button>
+            </Button>
           )}
           {canClearToken &&
             !editingToken &&
             !confirmClearToken && (
-              <button
+              <Button
                 type="button"
                 className="minke-remote-hub__button--danger-quiet"
                 disabled={busy}
@@ -1581,18 +1578,17 @@ function BotChannel({
                 }}
               >
                 {t("unlinkBot")}
-              </button>
+              </Button>
             )}
           {canReset && !confirmReset && (
-            <button
+            <Button
               ref={resetTriggerRef}
               type="button"
-              className="minke-remote-hub__button--quiet"
               disabled={busy}
               onClick={() => setConfirmReset(true)}
             >
               {t(resetGateway ? "resetGateway" : "resetLocal")}
-            </button>
+            </Button>
           )}
         </div>
 
@@ -1608,22 +1604,21 @@ function BotChannel({
               )}
             </p>
             <div className="minke-remote-hub__channel-actions">
-              <button
+              <Button variant="outline"
                 type="button"
                 className="minke-remote-hub__button--danger"
                 disabled={busy}
                 onClick={unlink}
               >
                 {busy ? t("busy") : t("confirmClearBotToken")}
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className="minke-remote-hub__button--quiet"
                 disabled={busy}
                 onClick={() => setConfirmClearToken(false)}
               >
                 {t("keepLocalData")}
-              </button>
+              </Button>
             </div>
           </div>
         )}
@@ -1642,7 +1637,7 @@ function BotChannel({
                   )}
             </p>
             <div className="minke-remote-hub__channel-actions">
-              <button
+              <Button variant="outline"
                 ref={resetConfirmRef}
                 type="button"
                 disabled={busy}
@@ -1655,15 +1650,14 @@ function BotChannel({
                         ? "confirmResetGateway"
                         : "confirmResetLocal",
                     )}
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className="minke-remote-hub__button--quiet"
                 disabled={busy}
                 onClick={() => setConfirmReset(false)}
               >
                 {t("keepLocalData")}
-              </button>
+              </Button>
             </div>
           </div>
         )}
@@ -1785,7 +1779,7 @@ function RemoteHubDialog({
     readonly status: string;
     readonly view: RemoteHubView;
   }): ReactNode => (
-    <button
+    <Button
       ref={navigationRefs[view]}
       id={navigationIds[view]}
       type="button"
@@ -1814,7 +1808,7 @@ function RemoteHubDialog({
         data-tone={connectionTone(state)}
         aria-hidden="true"
       />
-    </button>
+    </Button>
   );
 
   useEffect(() => {
@@ -1906,7 +1900,7 @@ function RemoteHubDialog({
             <h1 id={titleId}>{t("title")}</h1>
             <p id={descriptionId}>{t("description")}</p>
           </div>
-          <button
+          <Button size="sm"
             ref={closeRef}
             type="button"
             className="minke-remote-hub__close"
@@ -1915,7 +1909,7 @@ function RemoteHubDialog({
             onClick={() => runtime.close()}
           >
             <LucideIcon icon={X} size={17} />
-          </button>
+          </Button>
         </header>
 
         <div className="minke-remote-hub__body">
@@ -2090,7 +2084,7 @@ function RemoteHubDialog({
                     {t("credentialAuthorizationPending")}
                   </small>
                 </div>
-                <button
+                <Button variant="primary"
                   type="button"
                   className="minke-remote-hub__authorization-action"
                   data-minke-remote-hub-authorize-credentials
@@ -2109,7 +2103,7 @@ function RemoteHubDialog({
                           ? "retryCredentialVault"
                           : "authorizeCredentialVault",
                       )}
-                </button>
+                </Button>
               </section>
             )}
             {snapshot.error !== undefined &&

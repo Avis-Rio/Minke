@@ -61,8 +61,13 @@ test("saved legacy plugin discovery tabs become browser presets and retain valid
 test("discovery shares one secure guest through navigation, error recovery and unmount", async () => {
   const { JSDOM } = await import("../vendor/deepseek-harness/node_modules/jsdom/lib/api.js");
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { pretendToBeVisual: true });
+  const acquired = [], released = [];
   const globals = { window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
-    HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, Event: dom.window.Event, IS_REACT_ACT_ENVIRONMENT: true };
+    HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, Event: dom.window.Event, IS_REACT_ACT_ENVIRONMENT: true,
+    dshDesktop: { protocolVersion: 1, browser: {
+      acquire: async workspace => { acquired.push(workspace); return { lease: "discovery", partition: "persist:minke-tabs-web" }; },
+      release: async lease => { released.push(lease); }, onOpenRequested: () => () => {},
+    } } };
   const saved = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, value, writable: true });
   let root;
@@ -79,6 +84,7 @@ test("discovery shares one secure guest through navigation, error recovery and u
     const commands = [];
     const css = [];
     const removedCss = [];
+    let cancelInitial;
     let guestUrl = PLUGIN_DISCOVERY_TOPIC_URL;
     const create = dom.window.document.createElement.bind(dom.window.document);
     dom.window.document.createElement = (name, options) => {
@@ -86,7 +92,10 @@ test("discovery shares one secure guest through navigation, error recovery and u
       if (name !== "webview") return node;
       Object.assign(node, {
         getURL: () => guestUrl, getTitle: () => "Topic", canGoBack: () => false, canGoForward: () => false,
-        loadURL: url => { guestUrl = url; commands.push(url); }, reload: () => commands.push("reload"), stop() {},
+        loadURL: url => {
+          guestUrl = url; commands.push(url);
+          return commands.length === 1 ? new Promise((_resolve, reject) => { cancelInitial = reject; }) : Promise.resolve();
+        }, reload: () => commands.push("reload"), stop() {}, clearHistory() {},
         insertCSS: async source => { css.push(source); return `css-${css.length}`; },
         removeInsertedCSS: async key => { removedCss.push(key); },
       });
@@ -110,13 +119,20 @@ test("discovery shares one secure guest through navigation, error recovery and u
     assert.equal(guest.className, "minke-tabs-view__guest");
     assert.equal(guest.getAttribute("partition"), "persist:minke-tabs-web");
     assert.equal(guest.hasAttribute("allowpopups"), false);
-    assert.equal(guest.getAttribute("webpreferences"), "contextIsolation=yes,nodeIntegration=no,sandbox=yes,webSecurity=yes");
+    assert.equal(guest.getAttribute("src"), "about:blank#discovery");
+    assert.deepEqual(acquired, ["minke:persistent-browser"]);
     await act(async () => guest.dispatchEvent(new dom.window.Event("dom-ready")));
     assert.equal(css.length, 2, "the preset adds GitHub topic styles to the common guest");
     const search = createPluginSearchUrl("tools stars:>5");
     await act(async () => web.navigate(id, search));
+    // Electron may serialize a canceled load's error without its `code` field.
+    // It is a navigation failure, never a reason to detach the live guest.
+    await act(async () => cancelInitial(new Error("ERR_ABORTED (-3) loading initial page")));
+    guestUrl = createPluginSearchUrl("tools stars:>10");
+    await act(async () => guest.dispatchEvent(Object.assign(new dom.window.Event("did-navigate"), { url: guestUrl })));
+    assert.equal(tabs.tab(id).payload.url, guestUrl, "a canceled initial load must retain navigation observation and URL persistence");
     assert.equal(created.length, 1, "navigation must retain the guest and its history");
-    assert.equal(dom.window.document.querySelector('input[type="search"]').value, "tools stars:>5");
+    assert.equal(dom.window.document.querySelector('input[type="search"]').value, "tools stars:>10");
     await act(async () => guest.dispatchEvent(new dom.window.Event("dom-ready")));
     assert.equal(css.length, 4, "navigation applies the search layout to the retained guest");
     assert.equal(removedCss.length, 2, "navigation removes the old layout before replacing it");
@@ -126,11 +142,12 @@ test("discovery shares one secure guest through navigation, error recovery and u
     assert.match(dom.window.document.querySelector('[role="alert"]').textContent, /offline/);
     const retry = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === webTabsEn["web.error.retry"]);
     await act(async () => retry.click());
-    assert.deepEqual(commands, [search, "reload"]);
+    assert.deepEqual(commands, [PLUGIN_DISCOVERY_TOPIC_URL, search, "reload"]);
     assert.equal(created.length, 1);
     await act(async () => root.unmount());
     root = undefined;
     assert.equal(guest.isConnected, false);
+    assert.deepEqual(released, ["discovery"]);
     assert.equal(removedCss.length, 2, "detached guests need no native CSS cleanup");
     web.update(id, { loading: false });
     const before = tabs.tab(id).payload;

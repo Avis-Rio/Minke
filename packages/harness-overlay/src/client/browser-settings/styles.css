@@ -128,40 +128,6 @@
   opacity: 0.45;
 }
 
-.minke-browser-settings__reset {
-  box-sizing: border-box;
-  min-height: 36px;
-  padding: 7px 12px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 18px;
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 20px;
-  white-space: nowrap;
-  transition:
-    border-color 120ms ease-out,
-    background-color 120ms ease-out;
-}
-
-.minke-browser-settings__reset:hover:not(:disabled) {
-  border-color: var(--dsw-alias-border-l1);
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.minke-browser-settings__reset:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: 2px;
-}
-
-.minke-browser-settings__reset:disabled {
-  cursor: default;
-  opacity: 0.45;
-}
-
 .minke-browser-settings__edit-hint {
   padding-right: 104px;
 }
@@ -181,8 +147,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .minke-browser-settings__input,
-  .minke-browser-settings__reset {
+  .minke-browser-settings__input {
     transition: none;
   }
 }

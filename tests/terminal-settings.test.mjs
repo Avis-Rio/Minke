@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  mkdir,
   mkdtemp,
   readFile,
   rm,
+  writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { migrateTerminalFontProfile } from "@minke/desktop/main/profile-migration.ts";
 import { afterEach, test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -49,6 +53,52 @@ import {
 } from "@minke/harness-overlay/client/tabs/terminal/locales.ts";
 
 const roots = [];
+
+test("legacy terminal fonts migrate once without overwriting General preferences", async () => {
+  const home = await mkdtemp(join(tmpdir(), "minke-terminal-migration-"));
+  roots.push(home);
+  const dir = join(home, "profiles", "web");
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, "cordis.patch.yml");
+  const before = '# keep theme\n- id: ui-theme\n  config:\n    preference: dark\n    terminalFontFamily: Fira Code\n- id: unrelated\n  config:\n    expression: !!js (() => { throw new Error("never evaluate") })()\n';
+  await writeFile(path, before);
+  const options = { runtimeRoot: resolve("runtime/host"), dshHome: home, electronExecutable: process.execPath };
+  const { parseDocument } = createRequire(join(options.runtimeRoot, "package.json"))("yaml");
+  const parse = text => parseDocument(text, { customTags: [{ tag: "tag:yaml.org,2002:js", resolve: value => value }] });
+  const legacy = { fontFamily: "Monaco", fontSize: 28, lineHeight: 1.4 };
+  await migrateTerminalFontProfile(options, legacy);
+  const migrated = parse(await readFile(path, "utf8"));
+  assert.deepEqual(migrated.getIn([0, "config"]).toJSON(), { preference: "dark", terminalFontFamily: "Fira Code", terminalFontSize: 20 });
+  assert.equal(migrated.getIn([1, "config", "expression"], true).tag, "tag:yaml.org,2002:js");
+  assert.equal(await readFile(path + ".before-minke-terminal-fonts", "utf8"), before);
+  assert.deepEqual(JSON.parse(await readFile(join(dir, ".minke-terminal-fonts.json"), "utf8")).legacy, legacy);
+  // Native reset removes the override. Restart must not import the old size again.
+  await writeFile(path, "[]\n");
+  await migrateTerminalFontProfile(options, legacy);
+  assert.equal(await readFile(path, "utf8"), "[]\n");
+});
+
+test("font migration preserves home and dynamic settings and fresh-install defaults", async () => {
+  for (const mode of ["home", "dynamic", "fresh", "small"]) {
+    const home = await mkdtemp(join(tmpdir(), "minke-terminal-migration-"));
+    roots.push(home);
+    const dir = join(home, "profiles", "web");
+    await mkdir(dir, { recursive: true });
+    const path = join(dir, "cordis.patch.yml");
+    const before = mode === "dynamic" ? '- id: ui-theme\n  config: !!js |\n    ({ terminalFontSize: 17 })\n' : '[]\n';
+    await writeFile(path, before);
+    if (mode === "home") await writeFile(join(home, "cordis.patch.yml"), '- id: ui-theme\n  config:\n    terminalFontSize: 19\n');
+    const options = { runtimeRoot: resolve("runtime/host"), dshHome: home, electronExecutable: process.execPath };
+    const legacy = { fontFamily: "monospace", fontSize: 8, lineHeight: 1.2 };
+    await migrateTerminalFontProfile(options, mode === "fresh" ? undefined : legacy);
+    if (mode === "small") {
+      const { parse } = createRequire(join(options.runtimeRoot, "package.json"))("yaml");
+      assert.deepEqual(parse(await readFile(path, "utf8"))[0].config, { terminalFontFamily: "monospace", terminalFontSize: 10 });
+    } else assert.equal(await readFile(path, "utf8"), before);
+    await migrateTerminalFontProfile(options, legacy);
+    if (mode === "fresh") assert.equal(await readFile(path, "utf8"), before);
+  }
+});
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "minke-terminal-settings-"));
@@ -208,6 +258,9 @@ test("Preferences groups workspace and application settings", () => {
     true,
   );
   assert.match(source, /data-minke-terminal-settings/u);
+  assert.equal(markup.includes('id="minke-terminal-settings-font-size-help"'), false);
+  assert.equal(markup.includes('id="minke-terminal-settings-font-family-help"'), false);
+  assert.equal(markup.includes('id="minke-terminal-settings-line-height-help"'), true);
   assert.match(source, /data-appearance=\{colorScheme\}/u);
   assert.match(
     source,
@@ -411,24 +464,24 @@ test("Terminal settings hydrate, update optimistically, and reset", async () => 
   });
   assert.equal(runtime.getSnapshot().editable, true);
 
-  runtime.update({ fontSize: 15 });
-  assert.equal(runtime.getSnapshot().settings.fontSize, 15);
+  runtime.update({ lineHeight: 1.5 });
+  assert.equal(runtime.getSnapshot().settings.lineHeight, 1.5);
   await runtime.flush();
   assert.deepEqual(writes.at(-1), {
     fontFamily: "Monaco",
-    fontSize: 15,
-    lineHeight: 1.3,
+    fontSize: 13,
+    lineHeight: 1.5,
   });
 
   runtime.reset();
   await runtime.flush();
-  assert.deepEqual(runtime.getSnapshot().settings, DEFAULT_TERMINAL_SETTINGS);
-  assert.deepEqual(writes.at(-1), DEFAULT_TERMINAL_SETTINGS);
+  assert.deepEqual(runtime.getSnapshot().settings, { fontFamily: "Monaco", fontSize: 13, lineHeight: DEFAULT_TERMINAL_SETTINGS.lineHeight });
+  assert.deepEqual(writes.at(-1), runtime.getSnapshot().settings);
   runtime.dispose();
 });
 
 test("Terminal input changes do not retain React event.currentTarget", () => {
-  let currentTarget = { value: "16" };
+  let currentTarget = { value: "1.6" };
   let pendingUpdate;
   const event = {
     get currentTarget() {
@@ -440,7 +493,7 @@ test("Terminal input changes do not retain React event.currentTarget", () => {
     (update) => {
       pendingUpdate = update;
     },
-    "fontSize",
+    "lineHeight",
     event,
   );
   currentTarget = null;
@@ -448,14 +501,10 @@ test("Terminal input changes do not retain React event.currentTarget", () => {
   assert.equal(typeof pendingUpdate, "function");
   assert.deepEqual(
     pendingUpdate({
-      fontFamily: "",
-      fontSize: "12",
       lineHeight: "1.24",
     }),
     {
-      fontFamily: "",
-      fontSize: "16",
-      lineHeight: "1.24",
+      lineHeight: "1.6",
     },
   );
 });
@@ -472,7 +521,7 @@ test("Terminal persistence failures remain observable", async () => {
   });
   await runtime.initialize();
 
-  runtime.update({ fontSize: 16 });
+  runtime.update({ lineHeight: 1.6 });
   await runtime.flush();
   assert.equal(runtime.getSnapshot().error, "write");
   runtime.dispose();

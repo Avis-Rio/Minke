@@ -12,7 +12,9 @@ export const TERMINAL_LINE_HEIGHT_MAX = 2;
 export const TERMINAL_FONT_FAMILY_MAX_LENGTH = 240;
 
 export interface TerminalSettings {
+  /** Legacy backup for one-time import into DSH General; never used for rendering. */
   fontFamily: string;
+  /** Legacy backup, including old 8–32px values. New edits belong to DSH General. */
   fontSize: number;
   lineHeight: number;
 }

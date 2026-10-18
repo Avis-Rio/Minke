@@ -1,3 +1,4 @@
+import { Switch } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   LOCAL_MODEL_RUNTIMES,
   type LocalModelRuntimeId,
@@ -6,7 +7,6 @@ import {
   useEffect,
   useRef,
   useSyncExternalStore,
-  type ChangeEvent,
   type ReactNode,
 } from "react";
 import type {
@@ -83,20 +83,11 @@ function LocalModelRuntimeSwitch({
     !snapshot.editable ||
     !snapshot.available[id] ||
     snapshot.status[id].applying;
-  const onChange = (
-    event: ChangeEvent<HTMLInputElement>,
-  ): void => {
-    try {
-      runtime.setEnabled(id, event.currentTarget.checked);
-    } catch {
-      event.currentTarget.checked =
-        snapshot.settings[id].enabled;
-    }
-  };
 
   return (
     <span
       data-minke-local-model-settings={id}
+      aria-busy={snapshot.status[id].applying}
       data-error={
         snapshot.error === "read" ||
           snapshot.status[id].error === "write"
@@ -111,23 +102,16 @@ function LocalModelRuntimeSwitch({
         <span className="minke-local-model-switch__label">
           {autoStart}
         </span>
-        <input
-          className="minke-local-model-switch__input"
-          type="checkbox"
-          role="switch"
-          aria-label={`${descriptor.displayName}: ${autoStart}`}
-          aria-describedby={`minke-local-model-${id}-status`}
-          aria-busy={snapshot.status[id].applying}
+        <Switch
+          label={`${descriptor.displayName}: ${autoStart}`}
+          title={status}
           checked={snapshot.settings[id].enabled}
           disabled={disabled}
-          onChange={onChange}
+          onChange={(enabled) => {
+            try { runtime.setEnabled(id, enabled); }
+            catch { /* The controlled switch retains the latest runtime state. */ }
+          }}
         />
-        <span
-          className="minke-local-model-switch__track"
-          aria-hidden="true"
-        >
-          <span className="minke-local-model-switch__thumb" />
-        </span>
       </label>
       <span
         className="minke-local-model-switch__status"

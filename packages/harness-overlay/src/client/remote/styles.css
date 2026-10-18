@@ -74,33 +74,9 @@
   align-items: center;
   gap: 8px;
 }
-.minke-remote__refresh,
-.minke-remote__copy {
-  min-height: 24px;
-  padding: 2px 9px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 7px;
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  line-height: 18px;
-}
-.minke-remote__refresh:hover:not(:disabled),
-.minke-remote__copy:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-.minke-remote__refresh:focus-visible,
-.minke-remote__copy:focus-visible,
 .minke-remote__address-link:focus-visible {
   outline: 2px solid var(--dsw-alias-brand-primary);
   outline-offset: 2px;
-}
-.minke-remote__refresh:disabled,
-.minke-remote__copy:disabled {
-  cursor: default;
-  opacity: 0.55;
 }
 .minke-remote__status[data-state="active"] {
   background: color-mix(
@@ -390,53 +366,22 @@
 .minke-remote__field--wide {
   grid-column: 1 / -1;
 }
-.minke-remote__field input,
-.minke-remote__inline-control button {
-  box-sizing: border-box;
-  min-width: 0;
-  min-height: 34px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 7px;
-  background: var(--dsw-alias-bg-module-platform);
-  color: var(--dsw-alias-label-primary);
-  font: inherit;
-  font-size: 12px;
-  line-height: 18px;
-}
-.minke-remote__field input {
-  width: 100%;
-  padding: 7px 9px;
-}
 .minke-remote__input-help {
   position: relative;
   display: block;
   min-width: 0;
 }
-.minke-remote__input-help > input {
+.minke-remote__input-help > .minke-remote__input {
   padding-right: 39px;
 }
 .minke-remote__help-trigger {
   position: absolute;
-  top: 4px;
+  top: 2px;
   right: 4px;
-  display: grid;
-  width: 26px;
-  height: 26px;
+  width: 28px;
   padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
+  justify-content: center;
   color: var(--dsw-alias-label-secondary);
-  cursor: help;
-  place-items: center;
-}
-.minke-remote__help-trigger:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
-}
-.minke-remote__help-trigger:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: 1px;
 }
 .minke-remote__help-tooltip {
   position: absolute;
@@ -465,29 +410,8 @@
   pointer-events: auto;
   transform: translateY(0);
 }
-.minke-remote__field input:focus-visible,
-.minke-remote__inline-control button:focus-visible {
-  border-color: var(--dsw-alias-brand-primary);
-  outline: 2px solid color-mix(
-    in srgb,
-    var(--dsw-alias-brand-primary) 28%,
-    transparent
-  );
-  outline-offset: 1px;
-}
-.minke-remote__field input[aria-invalid="true"] {
+.minke-remote__input:has([aria-invalid="true"]) {
   border-color: var(--dsw-alias-state-warning-primary);
-}
-.minke-remote__field input[aria-invalid="true"]:focus-visible {
-  outline-color: color-mix(
-    in srgb,
-    var(--dsw-alias-state-warning-primary) 32%,
-    transparent
-  );
-}
-.minke-remote__field input:disabled,
-.minke-remote__inline-control button:disabled {
-  opacity: 0.55;
 }
 .minke-remote__field input[readonly] {
   color: var(--dsw-alias-label-secondary);
@@ -522,36 +446,29 @@
   min-width: 0;
   gap: 7px;
 }
-.minke-remote__inline-control input {
+.minke-remote__inline-control .minke-remote__input {
   flex: 1;
 }
 .minke-remote__inline-control button {
   flex: none;
-  padding: 7px 9px;
-  cursor: pointer;
 }
 .minke-remote__inline-control .minke-remote__regenerate {
-  display: grid;
-  width: 34px;
-  min-width: 34px;
+  width: 28px;
+  min-width: 28px;
   padding: 0;
-  place-items: center;
+  justify-content: center;
 }
 .minke-remote__input-suffix {
   display: flex;
   min-width: 0;
   align-items: center;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 7px;
-  background: var(--dsw-alias-bg-module-platform);
+  gap: 6px;
 }
-.minke-remote__input-suffix input {
+.minke-remote__input-suffix .minke-remote__input {
   min-width: 80px;
   flex: 1;
-  border: 0;
-  background: transparent;
 }
-.minke-remote__input-suffix > span {
+.minke-remote__input-suffix > span:not(.minke-remote__input) {
   flex: none;
   padding-right: 9px;
   color: var(--dsw-alias-label-secondary);
@@ -565,7 +482,6 @@
   gap: 16px;
 }
 
-.minke-remote__primary-action:focus-visible,
 .minke-remote__security-disclosure summary:focus-visible {
   outline: 2px solid var(--dsw-alias-brand-primary);
   outline-offset: 2px;
@@ -585,27 +501,7 @@
 }
 
 .minke-remote__primary-action {
-  min-height: 34px;
   flex: none;
-  padding: 7px 12px;
-  border: 1px solid var(--dsw-alias-brand-primary);
-  border-radius: 8px;
-  background: var(--dsw-alias-brand-primary);
-  color: var(--dsw-alias-label-primary-foreground);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 18px;
-}
-
-.minke-remote__primary-action:hover:not(:disabled) {
-  filter: brightness(1.06);
-}
-
-.minke-remote__primary-action:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
 }
 
 .minke-remote__security-disclosure {
@@ -723,4 +619,10 @@
   .minke-remote__help-tooltip {
     transition: none;
   }
+}
+
+.minke-remote__input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
 }

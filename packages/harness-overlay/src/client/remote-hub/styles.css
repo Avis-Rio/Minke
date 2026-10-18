@@ -2,48 +2,21 @@
 
 [data-minke-remote-hub-action] {
   position: relative;
-  display: inline-grid !important;
-  box-sizing: border-box;
   width: 28px;
   min-width: 28px !important;
-  height: 28px;
   flex: none;
-  place-items: center;
+  justify-content: center;
   padding: 0 !important;
-  border: none;
-  border-radius: 28px;
-  appearance: none;
-  background: transparent;
   color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
   pointer-events: auto;
   -webkit-app-region: no-drag;
   app-region: no-drag;
-}
-
-[data-minke-remote-hub-action]:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-secondary);
 }
 
 [data-minke-remote-hub-action] > svg {
   width: 15px;
   height: 15px;
   pointer-events: none;
-}
-
-[data-minke-remote-hub-action]:focus-visible,
-.minke-remote-hub__close:focus-visible,
-.minke-remote-hub__navigation-item:focus-visible,
-.minke-remote-hub__authorization-action:focus-visible,
-.minke-remote-hub__channel-controls button:focus-visible,
-.minke-remote-hub__channel-actions button:focus-visible,
-.minke-remote-hub__verify input:focus-visible,
-.minke-remote-hub__verify button:focus-visible,
-.minke-remote-hub__bot-token input:focus-visible,
-.minke-remote-hub__bot-token button:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: 2px;
 }
 
 [data-minke-remote-hub-indicator] {
@@ -166,22 +139,11 @@
 }
 
 .minke-remote-hub__close {
-  display: inline-grid;
-  width: 32px;
-  height: 32px;
+  width: 28px;
   flex: none;
-  place-items: center;
+  justify-content: center;
   padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
   color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
-}
-
-.minke-remote-hub__close:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
 }
 
 .minke-remote-hub__dependencies {
@@ -266,7 +228,6 @@
 
 .minke-remote-hub__navigation-item {
   display: grid;
-  box-sizing: border-box;
   width: 100%;
   min-width: 0;
   min-height: 48px;
@@ -274,12 +235,7 @@
   align-items: center;
   gap: 9px;
   padding: 7px 9px;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
   color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
-  font: inherit;
   text-align: left;
 }
 
@@ -470,33 +426,8 @@
 }
 
 .minke-remote-hub__authorization-action {
-  display: inline-flex;
-  box-sizing: border-box;
-  min-height: 38px;
   grid-column: 1 / -1;
-  align-items: center;
-  justify-content: center;
   justify-self: center;
-  padding: 8px 13px;
-  border: 1px solid var(--dsw-alias-brand-primary);
-  border-radius: 9px;
-  background: var(--dsw-alias-brand-primary);
-  color: var(--dsw-alias-label-primary-foreground);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  font-weight: 650;
-  line-height: 18px;
-  white-space: nowrap;
-}
-
-.minke-remote-hub__authorization-action:hover:not(:disabled) {
-  filter: brightness(1.06);
-}
-
-.minke-remote-hub__authorization-action:disabled {
-  cursor: not-allowed;
-  opacity: 0.56;
 }
 
 .minke-remote-hub__channel-panel,
@@ -565,29 +496,6 @@
   justify-content: flex-end;
   gap: 7px;
   margin-left: auto;
-}
-
-.minke-remote-hub__channel-controls button {
-  box-sizing: border-box;
-  min-height: 28px;
-  padding: 4px 9px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 7px;
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  cursor: pointer;
-  font: inherit;
-  font-size: 10px;
-  line-height: 16px;
-}
-
-.minke-remote-hub__channel-controls button:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.minke-remote-hub__channel-controls button:disabled {
-  cursor: not-allowed;
-  opacity: 0.52;
 }
 
 .minke-remote-hub__channel-status {
@@ -710,30 +618,6 @@
   line-height: 15px;
 }
 
-.minke-remote-hub__saved-token button {
-  min-height: 30px;
-  flex: none;
-  padding: 6px 9px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 7px;
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  cursor: pointer;
-  font: inherit;
-  font-size: 10px;
-  line-height: 16px;
-}
-
-.minke-remote-hub__saved-token
-  button:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.minke-remote-hub__saved-token button:disabled {
-  opacity: 0.52;
-  cursor: not-allowed;
-}
-
 .minke-remote-hub__channel-status[data-tone="success"] {
   background: color-mix(
     in srgb,
@@ -835,71 +719,12 @@
   gap: 7px;
 }
 
-.minke-remote-hub__verify input,
-.minke-remote-hub__verify button,
-.minke-remote-hub__bot-token input,
-.minke-remote-hub__bot-token button,
-.minke-remote-hub__channel-actions button {
-  box-sizing: border-box;
-  min-height: 34px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  font: inherit;
-  font-size: 11px;
-  line-height: 17px;
-}
-
-.minke-remote-hub__verify input,
-.minke-remote-hub__bot-token input {
-  min-width: 0;
-  flex: 1;
-  padding: 7px 9px;
-  background: var(--dsw-alias-bg-module-platform);
-  caret-color: var(--dsw-alias-brand-primary);
-}
-
-.minke-remote-hub__verify input::placeholder,
-.minke-remote-hub__bot-token input::placeholder {
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.minke-remote-hub__verify button,
-.minke-remote-hub__bot-token button,
-.minke-remote-hub__channel-actions button {
-  padding: 7px 11px;
-  cursor: pointer;
-}
-
-.minke-remote-hub__verify button:not(:disabled):hover,
-.minke-remote-hub__bot-token button:not(:disabled):hover,
-.minke-remote-hub__channel-actions
-  button:not(:disabled):hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.minke-remote-hub__verify button:disabled,
-.minke-remote-hub__bot-token button:disabled,
-.minke-remote-hub__channel-actions button:disabled {
-  opacity: 0.52;
-  cursor: not-allowed;
-}
-
 .minke-remote-hub__channel-actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 7px;
   margin-top: 13px;
-}
-
-.minke-remote-hub__channel-actions
-  .minke-remote-hub__button--quiet,
-.minke-remote-hub__bot-token
-  .minke-remote-hub__button--quiet {
-  border-color: transparent;
-  color: var(--dsw-alias-label-secondary);
 }
 
 .minke-remote-hub__channel-actions
@@ -1212,4 +1037,9 @@
   .minke-remote-hub__dialog {
     animation: none;
   }
+}
+
+.minke-remote-hub__input {
+  min-width: 0;
+  flex: 1;
 }

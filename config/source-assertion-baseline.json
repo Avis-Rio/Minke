@@ -6,13 +6,13 @@
   "tests/embedded-node-permissions.test.mjs": 10,
   "tests/agent-browser-tabs.test.mjs": 17,
   "tests/github-actions-package.test.mjs": 48,
-  "tests/harness-overlay.test.mjs": 148,
+  "tests/harness-overlay.test.mjs": 140,
   "tests/harness-runtime-prune.test.mjs": 1,
   "tests/im-gateway.test.mjs": 1,
   "tests/macos-tray.test.mjs": 6,
-  "tests/macos-window-css.test.mjs": 92,
+  "tests/macos-window-css.test.mjs": 85,
   "tests/pwa.test.mjs": 1,
-  "tests/tabs.test.mjs": 107,
+  "tests/tabs.test.mjs": 105,
   "tests/terminal-settings.test.mjs": 9,
   "tests/terminal-tabs.test.mjs": 12
 }

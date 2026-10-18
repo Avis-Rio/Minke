@@ -1,3 +1,4 @@
+import { Button, Input, Switch } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   useEffect,
   useState,
@@ -14,8 +15,6 @@ import {
 import {
   DEFAULT_TERMINAL_SETTINGS,
   parseTerminalSettings,
-  TERMINAL_FONT_SIZE_MAX,
-  TERMINAL_FONT_SIZE_MIN,
   TERMINAL_LINE_HEIGHT_MAX,
   TERMINAL_LINE_HEIGHT_MIN,
   type TerminalSettings,
@@ -244,23 +243,15 @@ function WebSearchPreferences({
             </span>
           </span>
           <span className="minke-preferences__control">
-            <span className="minke-preferences__switch">
-              <input
-                type="checkbox"
-                checked={snapshot.settings.fallbackEnabled}
-                disabled={!snapshot.editable}
-                aria-label={t(
-                  "preferences.webSearch.fallback.label",
-                )}
-                aria-describedby={helpId}
-                onChange={(event) => {
-                  runtime.setFallbackEnabled(
-                    event.currentTarget.checked,
-                  );
-                }}
-              />
-              <span aria-hidden="true" />
-            </span>
+            <Switch
+              checked={snapshot.settings.fallbackEnabled}
+              disabled={!snapshot.editable}
+              label={t(
+                "preferences.webSearch.fallback.label",
+              )}
+              title={t("preferences.webSearch.fallback.help")}
+              onChange={(checked) => runtime.setFallbackEnabled(checked)}
+            />
           </span>
         </label>
       </div>
@@ -308,22 +299,15 @@ function AppUpdatePreferences({
             </span>
           </span>
           <span className="minke-preferences__control">
-            <span className="minke-preferences__switch">
-              <input
-                type="checkbox"
-                checked={snapshot.settings.autoDownload}
-                disabled={!snapshot.editable}
-                aria-label={t(
-                  "preferences.update.autoDownload.label",
-                )}
-                onChange={(event) => {
-                  runtime.setAutoDownload(
-                    event.currentTarget.checked,
-                  );
-                }}
-              />
-              <span aria-hidden="true" />
-            </span>
+            <Switch
+              checked={snapshot.settings.autoDownload}
+              disabled={!snapshot.editable}
+              label={t(
+                "preferences.update.autoDownload.label",
+              )}
+              title={t("preferences.update.autoDownload.help")}
+              onChange={(checked) => runtime.setAutoDownload(checked)}
+            />
           </span>
         </label>
       </div>
@@ -539,8 +523,6 @@ function TerminalPreferences({
   useEffect(() => {
     setDrafts(settingsToDrafts(snapshot.settings));
   }, [
-    snapshot.settings.fontFamily,
-    snapshot.settings.fontSize,
     snapshot.settings.lineHeight,
   ]);
 
@@ -625,115 +607,6 @@ function TerminalPreferences({
         <label className="minke-terminal-settings__row">
           <span className="minke-terminal-settings__copy">
             <span className="minke-terminal-settings__label">
-              {t("preferences.terminal.fontFamily.label")}
-            </span>
-            <span
-              id="minke-terminal-settings-font-family-help"
-              className="minke-terminal-settings__help"
-            >
-              {t("preferences.terminal.fontFamily.help")}
-            </span>
-          </span>
-          <span className="minke-terminal-settings__control">
-            <input
-              className="minke-terminal-settings__input"
-              type="text"
-              autoComplete="off"
-              spellCheck={false}
-              value={drafts.fontFamily}
-              placeholder={t(
-                "preferences.terminal.fontFamily.placeholder",
-              )}
-              disabled={!snapshot.editable}
-              aria-describedby={[
-                "minke-terminal-settings-font-family-help",
-                invalid.fontFamily
-                  ? "minke-terminal-settings-font-family-error"
-                  : "",
-              ].filter(Boolean).join(" ")}
-              aria-invalid={invalid.fontFamily === true}
-              onChange={(event) => {
-                stageDraftChange(setDrafts, "fontFamily", event);
-              }}
-              onBlur={() => {
-                commit("fontFamily");
-              }}
-              onKeyDown={(event) => {
-                onFieldKeyDown("fontFamily", event);
-              }}
-            />
-            {invalid.fontFamily && (
-              <span
-                id="minke-terminal-settings-font-family-error"
-                className="minke-terminal-settings__validation"
-                role="alert"
-              >
-                {t("preferences.terminal.validation.fontFamily")}
-              </span>
-            )}
-          </span>
-        </label>
-
-        <label className="minke-terminal-settings__row">
-          <span className="minke-terminal-settings__copy">
-            <span className="minke-terminal-settings__label">
-              {t("preferences.terminal.fontSize.label")}
-            </span>
-            <span
-              id="minke-terminal-settings-font-size-help"
-              className="minke-terminal-settings__help"
-            >
-              {t("preferences.terminal.fontSize.help", {
-                min: TERMINAL_FONT_SIZE_MIN,
-                max: TERMINAL_FONT_SIZE_MAX,
-              })}
-            </span>
-          </span>
-          <span className="minke-terminal-settings__control">
-            <input
-              className="minke-terminal-settings__input minke-terminal-settings__input--number"
-              type="number"
-              inputMode="numeric"
-              min={TERMINAL_FONT_SIZE_MIN}
-              max={TERMINAL_FONT_SIZE_MAX}
-              step={1}
-              value={drafts.fontSize}
-              disabled={!snapshot.editable}
-              aria-describedby={[
-                "minke-terminal-settings-font-size-help",
-                invalid.fontSize
-                  ? "minke-terminal-settings-font-size-error"
-                  : "",
-              ].filter(Boolean).join(" ")}
-              aria-invalid={invalid.fontSize === true}
-              onChange={(event) => {
-                stageDraftChange(setDrafts, "fontSize", event);
-              }}
-              onBlur={() => {
-                commit("fontSize");
-              }}
-              onKeyDown={(event) => {
-                onFieldKeyDown("fontSize", event);
-              }}
-            />
-            {invalid.fontSize && (
-              <span
-                id="minke-terminal-settings-font-size-error"
-                className="minke-terminal-settings__validation"
-                role="alert"
-              >
-                {t("preferences.terminal.validation.fontSize", {
-                  min: TERMINAL_FONT_SIZE_MIN,
-                  max: TERMINAL_FONT_SIZE_MAX,
-                })}
-              </span>
-            )}
-          </span>
-        </label>
-
-        <label className="minke-terminal-settings__row">
-          <span className="minke-terminal-settings__copy">
-            <span className="minke-terminal-settings__label">
               {t("preferences.terminal.lineHeight.label")}
             </span>
             <span
@@ -747,7 +620,7 @@ function TerminalPreferences({
             </span>
           </span>
           <span className="minke-terminal-settings__control">
-            <input
+            <Input
               className="minke-terminal-settings__input minke-terminal-settings__input--number"
               type="number"
               inputMode="decimal"
@@ -804,11 +677,8 @@ function TerminalPreferences({
         <code
           className="minke-terminal-settings__preview-code"
           style={{
-            fontFamily:
-              preview.fontFamily === ""
-                ? "var(--ds-font-family-code)"
-                : preview.fontFamily,
-            fontSize: `${String(preview.fontSize)}px`,
+            fontFamily: "var(--dsh-font-family-terminal, var(--ds-font-family-code))",
+            fontSize: "var(--dsh-terminal-font-size, 13px)",
             lineHeight: preview.lineHeight,
           }}
         >
@@ -828,9 +698,8 @@ function TerminalPreferences({
       </div>
 
       <div className="minke-terminal-settings__footer">
-        <button
+        <Button variant="outline"
           type="button"
-          className="minke-terminal-settings__reset"
           disabled={!snapshot.editable || usesDefaults}
           onClick={() => {
             setInvalid({});
@@ -838,7 +707,7 @@ function TerminalPreferences({
           }}
         >
           {t("preferences.terminal.reset")}
-        </button>
+        </Button>
       </div>
     </section>
   );
@@ -871,8 +740,6 @@ function settingsToDrafts(
   settings: Readonly<TerminalSettings>,
 ): TerminalSettingDrafts {
   return {
-    fontFamily: settings.fontFamily,
-    fontSize: String(settings.fontSize),
     lineHeight: settings.lineHeight.toFixed(2),
   };
 }
@@ -890,11 +757,7 @@ function settingsFromDrafts(
   drafts: TerminalSettingDrafts,
 ): TerminalSettings {
   return parseTerminalSettings({
-    fontFamily: drafts.fontFamily,
-    fontSize:
-      drafts.fontSize.trim() === ""
-        ? Number.NaN
-        : Number(drafts.fontSize),
+    ...DEFAULT_TERMINAL_SETTINGS,
     lineHeight:
       drafts.lineHeight.trim() === ""
         ? Number.NaN
@@ -908,9 +771,7 @@ function settingFromDraft(
   current: Readonly<TerminalSettings>,
 ): TerminalSettings[SettingField] {
   const value =
-    field === "fontFamily"
-      ? draft
-      : draft.trim() === ""
+    draft.trim() === ""
         ? Number.NaN
         : Number(draft);
   const parsed = parseTerminalSettings({
@@ -936,8 +797,6 @@ function sameSettings(
   right: Readonly<TerminalSettings>,
 ): boolean {
   return (
-    left.fontFamily === right.fontFamily &&
-    left.fontSize === right.fontSize &&
     left.lineHeight === right.lineHeight
   );
 }

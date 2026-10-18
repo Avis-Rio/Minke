@@ -1,3 +1,4 @@
+import { Button } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   useEffect,
   useState,
@@ -212,7 +213,7 @@ export function BrowserSettingsSection({
                   onKeyDown={(event) =>
                     handleKeyDown(field, event)}
                 />
-                <button
+                <Button variant="outline"
                   className="minke-browser-settings__reset"
                   type="button"
                   disabled={
@@ -225,7 +226,7 @@ export function BrowserSettingsSection({
                   onClick={() => reset(field)}
                 >
                   {t("browser.reset")}
-                </button>
+                </Button>
               </span>
               <span
                 id={editHintId}

@@ -153,57 +153,8 @@
   gap: 8px;
 }
 .minke-data-home__input {
-  box-sizing: border-box;
   min-width: 0;
-  height: 34px;
   flex: 1;
-  padding: 0 10px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 7px;
-  outline: none;
-  background: var(--dsw-alias-bg-module-platform);
-  color: var(--dsw-alias-label-primary);
-  font: inherit;
-  font-family: var(--ds-font-family-code);
-  font-size: 12px;
-}
-.minke-data-home__input:focus {
-  border-color: var(--dsw-alias-brand-primary);
-}
-.minke-data-home__button {
-  box-sizing: border-box;
-  height: 34px;
-  padding: 0 12px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 7px;
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-}
-.minke-data-home__button:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-.minke-data-home__button:focus-visible,
-.minke-data-home__input:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: 2px;
-}
-.minke-data-home__button:disabled,
-.minke-data-home__input:disabled {
-  cursor: default;
-  opacity: 0.45;
-}
-.minke-data-home__button--primary {
-  border-color: var(--dsw-alias-button-primary-fill);
-  background: var(--dsw-alias-button-primary-fill);
-  color: var(--dsw-alias-label-primary-foreground);
-}
-.minke-data-home__button--primary:hover:not(:disabled) {
-  background: var(--dsw-alias-button-primary-hover);
-  color: var(--dsw-alias-label-primary-foreground);
 }
 .minke-data-home__button--danger {
   border-color: var(--dsw-alias-state-error-primary);
@@ -317,17 +268,10 @@
   color: var(--dsw-alias-label-primary);
 }
 .minke-data-home__acknowledge {
-  display: flex;
   align-items: flex-start;
-  gap: 8px;
-  color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
-  font-size: 12px;
-  line-height: 18px;
 }
 .minke-data-home__acknowledge input {
   margin: 2px 0 0;
-  accent-color: var(--dsw-alias-brand-primary);
 }
 @media (max-width: 720px) {
   .minke-data-home__candidate,

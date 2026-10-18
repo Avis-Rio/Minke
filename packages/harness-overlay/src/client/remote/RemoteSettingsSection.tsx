@@ -1,3 +1,4 @@
+import { Button, Input } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   CircleQuestionMark,
   RotateCw,
@@ -269,9 +270,8 @@ function LoadedRemoteSettings({
               {t(presentation.statusKey)}
             </span>
             {presentation.canRefresh && (
-              <button
+              <Button variant="outline" size="sm"
                 type="button"
-                className="minke-remote__refresh"
                 disabled={
                   snapshot.operation.kind === "refreshing"
                 }
@@ -285,7 +285,7 @@ function LoadedRemoteSettings({
                 {snapshot.operation.kind === "refreshing"
                   ? t("refreshing")
                   : t("refresh")}
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -306,7 +306,7 @@ function LoadedRemoteSettings({
               >
                 <code>{maskedAddress}</code>
               </a>
-              <button
+              <Button variant="outline" size="sm"
                 type="button"
                 className="minke-remote__copy"
                 disabled={copyState === "copying"}
@@ -320,7 +320,7 @@ function LoadedRemoteSettings({
                   : copyState === "copied"
                     ? t("copiedAddress")
                     : t("copyAddress")}
-              </button>
+              </Button>
             </div>
             {copyState === "error" && (
               <p className="minke-remote__error" role="alert">
@@ -506,7 +506,7 @@ function LoadedRemoteSettings({
                   <label htmlFor={tailscaleIpInputId}>
                     {t("tailscaleIpAddress")}
                   </label>
-                  <input
+                  <Input className="minke-remote__input"
                     id={tailscaleIpInputId}
                     type="text"
                     inputMode="decimal"
@@ -658,7 +658,7 @@ function LoadedRemoteSettings({
                     setBaseDomainHelpDismissed(false);
                   }}
                 >
-                  <input
+                  <Input className="minke-remote__input"
                     id={baseDomainInputId}
                     type="text"
                     value={hostnameFields.baseDomain}
@@ -684,7 +684,7 @@ function LoadedRemoteSettings({
                       });
                     }}
                   />
-                  <button
+                  <Button size="sm"
                     type="button"
                     className="minke-remote__help-trigger"
                     aria-label={t("baseDomainHelpLabel")}
@@ -707,7 +707,7 @@ function LoadedRemoteSettings({
                       icon={CircleQuestionMark}
                       size={15}
                     />
-                  </button>
+                  </Button>
                   <span
                     id={baseDomainHintId}
                     className="minke-remote__help-tooltip"
@@ -736,7 +736,7 @@ function LoadedRemoteSettings({
                   {t("randomLabel")}
                 </label>
                 <span className="minke-remote__inline-control">
-                  <input
+                  <Input className="minke-remote__input"
                     id={generatedLabelInputId}
                     type="text"
                     value={hostnameFields.label}
@@ -766,7 +766,7 @@ function LoadedRemoteSettings({
                       });
                     }}
                   />
-                  <button
+                  <Button variant="outline" size="sm"
                     type="button"
                     className="minke-remote__regenerate"
                     disabled={providerLocked}
@@ -777,7 +777,7 @@ function LoadedRemoteSettings({
                     }}
                   >
                     <LucideIcon icon={RotateCw} size={16} />
-                  </button>
+                  </Button>
                 </span>
                 {generatedLabelAdvisory !== undefined && (
                   <small
@@ -803,7 +803,7 @@ function LoadedRemoteSettings({
               <label className="minke-remote__field">
                 <span>{t("teamName")}</span>
                 <span className="minke-remote__input-suffix">
-                  <input
+                  <Input className="minke-remote__input"
                     type="text"
                     value={cloudflare.teamName}
                     placeholder="my-team"
@@ -825,7 +825,7 @@ function LoadedRemoteSettings({
 
               <label className="minke-remote__field">
                 <span>{t("audience")}</span>
-                <input
+                <Input className="minke-remote__input"
                   type="text"
                   value={cloudflare.audience}
                   disabled={providerLocked}
@@ -842,7 +842,7 @@ function LoadedRemoteSettings({
 
               <label className="minke-remote__field">
                 <span>{t("tunnelName")}</span>
-                <input
+                <Input className="minke-remote__input"
                   type="text"
                   value={cloudflare.tunnel}
                   disabled={providerLocked}
@@ -859,7 +859,7 @@ function LoadedRemoteSettings({
 
               <label className="minke-remote__field">
                 <span>{t("originPort")}</span>
-                <input
+                <Input className="minke-remote__input"
                   type="number"
                   min={1024}
                   max={65535}
@@ -882,7 +882,7 @@ function LoadedRemoteSettings({
 
               <label className="minke-remote__field minke-remote__field--wide">
                 <span>{t("configPath")}</span>
-                <input
+                <Input className="minke-remote__input"
                   type="text"
                   value={cloudflare.configPath}
                   placeholder="/absolute/path/to/config.yml"
@@ -914,7 +914,7 @@ function LoadedRemoteSettings({
           <p className="minke-remote__help">
             {t("lifecycle")}
           </p>
-          <button
+          <Button variant="primary"
             type="button"
             className="minke-remote__primary-action"
             disabled={
@@ -926,7 +926,7 @@ function LoadedRemoteSettings({
             }}
           >
             {t(enabled ? "disable" : "enable")}
-          </button>
+          </Button>
         </div>
       </div>
 

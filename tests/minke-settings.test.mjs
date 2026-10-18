@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  act,
   createElement,
 } from "react";
+import { JSDOM } from "../vendor/deepseek-harness/node_modules/jsdom/lib/api.js";
 import {
   renderToStaticMarkup,
 } from "react-dom/server";
@@ -15,9 +17,7 @@ import {
   MinkeSettingsRuntime,
   minkeSettingsEn,
   minkeSettingsZh,
-  nextMinkeSettingsTabIndex,
   reconcileMinkeSettingsNavigationLogo,
-  shouldMountMinkeSettingsPage,
 } from "@minke/harness-overlay/client/minke-settings/index.ts";
 import {
   installRemote,
@@ -66,29 +66,6 @@ test("Minke Settings owns a sorted directory and one secondary tab", () => {
   unregisterPreferences();
   assert.equal(runtime.getSnapshot().activeId, undefined);
   assert.ok(revisions.length >= 4);
-  assert.equal(nextMinkeSettingsTabIndex(0, 5, "ArrowLeft"), 4);
-  assert.equal(nextMinkeSettingsTabIndex(4, 5, "ArrowRight"), 0);
-  assert.equal(nextMinkeSettingsTabIndex(3, 5, "Home"), 0);
-  assert.equal(nextMinkeSettingsTabIndex(1, 5, "End"), 4);
-  assert.equal(nextMinkeSettingsTabIndex(1, 5, "Enter"), undefined);
-  assert.equal(
-    shouldMountMinkeSettingsPage(
-      { ...page("shortcuts", 20), keepAlive: false },
-      "preferences",
-      new Set(["shortcuts"]),
-    ),
-    false,
-    "leaving shortcut recording must unmount its global Escape guard",
-  );
-  assert.equal(
-    shouldMountMinkeSettingsPage(
-      page("data-home", 20),
-      "preferences",
-      new Set(["data-home"]),
-    ),
-    true,
-    "stateful settings drafts remain mounted after their first visit",
-  );
   unsubscribe();
   runtime.dispose();
 });
@@ -287,10 +264,6 @@ test("the unified DSH section renders accessible labeled tabs", () => {
     icon: "browser",
   });
   runtime.register({
-    ...page("shortcuts", 10, "Keyboard shortcuts"),
-    icon: "shortcuts",
-  });
-  runtime.register({
     ...page("data-home", 20, "Data & Storage"),
     icon: "data-home",
   });
@@ -302,14 +275,14 @@ test("the unified DSH section renders accessible labeled tabs", () => {
   );
 
   assert.ok(html.includes('role="tablist"'));
-  assert.equal((html.match(/role="tab"/gu) ?? []).length, 4);
-  assert.equal((html.match(/role="tabpanel"/gu) ?? []).length, 4);
+  assert.equal((html.match(/role="tab"/gu) ?? []).length, 3);
+  assert.equal((html.match(/role="tabpanel"/gu) ?? []).length, 3);
   assert.ok(html.includes('aria-selected="true"'));
-  assert.ok(html.includes('aria-label="Preferences"'));
-  assert.ok(html.includes('aria-label="Browser"'));
+  assert.ok(html.includes('>Preferences</span>'));
+  assert.ok(html.includes('>Browser</span>'));
   assert.equal(
     (html.match(/class="minke-settings__tab-label"/gu) ?? []).length,
-    4,
+    3,
   );
   assert.ok(!html.includes('title="Remote access"'));
   assert.ok(html.includes("Preferences content"));
@@ -320,4 +293,50 @@ test("the unified DSH section renders accessible labeled tabs", () => {
     Object.keys(minkeSettingsZh).sort(),
   );
   runtime.dispose();
+});
+
+test("native settings tabs move keyboard focus and preserve visited drafts", async () => {
+  const dom = new JSDOM('<div id="root"></div>', { pretendToBeVisual: true });
+  const globals = { window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true };
+  const descriptors = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const runtime = new MinkeSettingsRuntime();
+  runtime.register({ ...page("preferences", 0, "Preferences"), render: () => createElement("input", { defaultValue: "draft" }) });
+  runtime.register(page("browser", 1, "Browser"));
+  runtime.register(page("data-home", 2, "Storage"));
+  let root;
+  try {
+    for (const [key, value] of Object.entries(globals)) {
+      Object.defineProperty(globalThis, key, { configurable: true, value, writable: true });
+    }
+    dom.window.HTMLElement.prototype.scrollIntoView = () => {};
+    const { createRoot } = await import("react-dom/client");
+    const container = dom.window.document.getElementById("root");
+    root = createRoot(container);
+    await act(async () => root.render(createElement(MinkeSettingsSection, { runtime, t: key => minkeSettingsEn[key] })));
+    const tabs = [...container.querySelectorAll('[role="tab"]')];
+    const draft = container.querySelector('input');
+    draft.value = "unsaved change";
+    tabs[0].focus();
+    for (const [key, index] of [["ArrowLeft", 2], ["ArrowRight", 0], ["End", 2], ["Home", 0], ["ArrowRight", 1]]) {
+      await act(async () => dom.window.document.activeElement.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key, bubbles: true })));
+      assert.equal(dom.window.document.activeElement, tabs[index]);
+      assert.equal(tabs[index].getAttribute("aria-selected"), "true");
+      assert.equal(tabs[index].tabIndex, 0);
+      const panel = dom.window.document.getElementById(tabs[index].getAttribute("aria-controls"));
+      assert.equal(panel.hidden, false);
+      assert.equal(panel.getAttribute("aria-labelledby"), tabs[index].id);
+      assert.equal(container.querySelectorAll('[role="tabpanel"]:not([hidden])').length, 1);
+    }
+    await act(async () => tabs[0].click());
+    assert.equal(container.querySelector('input'), draft);
+    assert.equal(draft.value, "unsaved change");
+  } finally {
+    if (root) await act(async () => root.unmount());
+    runtime.dispose();
+    for (const [key, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+    dom.window.close();
+  }
 });

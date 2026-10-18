@@ -644,6 +644,20 @@ test("targeted settings IPC preserves the other service even when its command is
   binding.dispose();
 });
 
+test("local model status commands use the resolved shell PATH without Node bootstrap flags", {
+  skip: process.platform === "win32",
+}, async () => {
+  const root = await temporaryRoot("minke-status-environment-");
+  const command = join(root, "lms");
+  const helper = join(root, "minke-fixture-status-helper");
+  await writeFile(command, '#!/bin/sh\n[ -z "$NODE_OPTIONS$ELECTRON_RUN_AS_NODE" ] || exit 7\nexec minke-fixture-status-helper\n');
+  await writeFile(helper, '#!/bin/sh\nprintf \'{"running":true}\\n\'\n');
+  await Promise.all([chmod(command, 0o700), chmod(helper, 0o700)]);
+  const probe = environment => createLocalModelStatusProbe({ lmStudio: command }, { environment });
+  assert.equal(await probe({ PATH: "/usr/bin:/bin" })("lmStudio"), "unknown");
+  assert.equal(await probe({ PATH: root, NODE_OPTIONS: "--invalid", ELECTRON_RUN_AS_NODE: "1" })("lmStudio"), "running");
+});
+
 test("local service status probes use read-only CLI and HTTP health checks", async () => {
   const calls = [];
   const probe = createLocalModelStatusProbe({ lmStudio: "/installed/lms" }, {
@@ -845,11 +859,11 @@ test("local service switches render independent busy and error states", () => {
     try {
       const lmStudio = dom.window.document.querySelector('[data-minke-local-model-settings="lmStudio"]');
       const ollama = dom.window.document.querySelector('[data-minke-local-model-settings="ollama"]');
-      assert.equal(lmStudio.querySelector('input').disabled, false);
-      assert.equal(lmStudio.querySelector('input').getAttribute('aria-busy'), "false");
+      assert.equal(lmStudio.querySelector('[role="switch"]').disabled, false);
+      assert.equal(lmStudio.getAttribute('aria-busy'), "false");
       assert.equal(lmStudio.hasAttribute('data-error'), false);
       assert.doesNotMatch(lmStudio.textContent, /Could not apply|Applying/u);
-      assert.equal(ollama.querySelector('input').disabled, phase === "pending");
+      assert.equal(ollama.querySelector('[role="switch"]').disabled, phase === "pending");
       assert.equal(ollama.hasAttribute('data-error'), phase === "failed");
       assert.match(ollama.textContent, phase === "failed" ? /Could not apply/u : /Applying/u);
     } finally {
@@ -871,7 +885,7 @@ test("service state tags sit beside each name independently of the auto-start sw
     const tags = [...dom.window.document.querySelectorAll('.minke-local-model-row__heading [role="status"]')];
     assert.deepEqual(tags.map(tag => tag.textContent), ["Not running", "Running"]);
     assert.deepEqual(tags.map(tag => tag.getAttribute("aria-label")), ["LM Studio: Not running", "Ollama: Running"]);
-    assert.deepEqual([...dom.window.document.querySelectorAll('input')].map(input => input.checked), [true, false]);
+    assert.deepEqual([...dom.window.document.querySelectorAll('[role="switch"]')].map(input => input.getAttribute('aria-checked') === 'true'), [true, false]);
   } finally {
     dom.window.close();
     harness.dispose();
@@ -984,9 +998,9 @@ test("local service auto-start switches delegate through the settings runtime", 
           );
         });
         const input = container.querySelector(
-          'input[role="switch"][aria-label="LM Studio: Auto-start"]',
+          '[role="switch"][aria-label="LM Studio: Auto-start"]',
         );
-        assert.ok(input instanceof dom.window.HTMLInputElement);
+        assert.ok(input instanceof dom.window.HTMLButtonElement);
         assert.equal(input.disabled, false);
         await act(async () => {
           input.click();

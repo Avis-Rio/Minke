@@ -34,8 +34,8 @@ const overlayRequire = createRequire(
 );
 const installedCordisManifest =
   overlayRequire("@deepseek-ai/cordis/package.json");
-const installedInvariantsManifest =
-  overlayRequire("@deepseek-ai/dsh-invariants/package.json");
+const installedShortcutsManifest =
+  overlayRequire("@deepseek-ai/dsh-client-shortcuts/package.json");
 const remoteAccessManifest = JSON.parse(
   readFileSync(
     new URL("../packages/remote-access/package.json", import.meta.url),
@@ -57,10 +57,10 @@ const cordisManifest = JSON.parse(
     "utf8",
   ),
 );
-const invariantsManifest = JSON.parse(
+const shortcutsManifest = JSON.parse(
   readFileSync(
     new URL(
-      "../vendor/deepseek-harness/packages/runtime-diagnostics/invariants/package.json",
+      "../vendor/deepseek-harness/packages/client/shortcuts/package.json",
       import.meta.url,
     ),
     "utf8",
@@ -164,13 +164,6 @@ const aboutViewSource = readFileSync(
   ),
   "utf8",
 );
-const dataHomeStylesSource = readFileSync(
-  new URL(
-    "../packages/harness-overlay/src/client/data-home/styles.css",
-    import.meta.url,
-  ),
-  "utf8",
-);
 const productBuildSource = readFileSync(
   new URL(
     "../scripts/harness/build-product-packages.mjs",
@@ -198,7 +191,7 @@ test("the client entry stays a composition root", () => {
     "installDesktopClient",
     "installAbout",
     "installDataHome",
-    "installWebBrand",
+    "installBrand",
     "installPwa",
     "installLocalModel",
     "installRemote",
@@ -215,10 +208,6 @@ test("the client entry stays a composition root", () => {
 });
 
 test("the Web projection shadows official DSH brand slots with Minke", () => {
-  assert.match(
-    brandInstallSource,
-    /if \(desktopTabsPort\(\)\.embeddedWebAvailable\) return;/u,
-  );
   for (const slot of [
     "conversation.hero.brand.mark",
     "sidebar.brand.mark",
@@ -289,6 +278,7 @@ test("product capability packages follow the shared naming convention", () => {
       "@deepseek-ai/dsh-api-remotes",
     ),
   );
+  assert.ok(manifest.dsh.client.inject.includes("@deepseek-ai/dsh-session-log-export"));
   assert.ok(
     !manifest.dsh.client.inject.includes(
       "@deepseek-ai/dsh-client-runtime",
@@ -332,13 +322,13 @@ test("product capability packages follow the shared naming convention", () => {
     cordisManifest.version,
   );
   assert.equal(
-    manifest.devDependencies["@deepseek-ai/dsh-invariants"],
-    invariantsManifest.version,
+    manifest.devDependencies["@deepseek-ai/dsh-client-shortcuts"],
+    shortcutsManifest.version,
   );
   assert.equal(installedCordisManifest.version, cordisManifest.version);
   assert.equal(
-    installedInvariantsManifest.version,
-    invariantsManifest.version,
+    installedShortcutsManifest.version,
+    shortcutsManifest.version,
   );
   assert.deepEqual(
     contract.productBundle.workspaceRuntimePackages,
@@ -486,7 +476,6 @@ test("the built client half is a Harness module-loader bundle", () => {
   assert.match(bundle, /minke-overlay: Web link tabs/u);
   assert.match(bundle, /minke-overlay: session header action styles/u);
   assert.match(bundle, /minke-tabs-toggle/u);
-  assert.match(bundle, /minkeDesktop\?\.sessionLogs/u);
   assert.doesNotMatch(bundle, /data-minke-session-log-action/u);
   assert.match(bundle, /conversation\.session\.header\.utilities/u);
   assert.doesNotMatch(
@@ -499,7 +488,11 @@ test("the built client half is a Harness module-loader bundle", () => {
   assert.match(bundle, /data-minke-about-trigger/u);
   assert.match(bundle, /data-minke-about-dialog/u);
   assert.match(bundle, /data:image\/png;base64/u);
-  assert.doesNotMatch(bundle, /require\(["']@deepseek-ai\//u);
+  assert.deepEqual(
+    [...new Set([...bundle.matchAll(/require\(["'](@deepseek-ai\/[^"']+)["']\)/gu)].map(([, id]) => id))],
+    ["@deepseek-ai/dsh-client-ui-primitives"],
+    "only the shared native UI platform module may remain external",
+  );
 });
 
 function inspectBuiltConnectionsBundle(source) {
@@ -635,10 +628,6 @@ test("About uses the public sidebar action and packaged desktop metadata", () =>
   );
   assert.match(
     aboutStylesSource,
-    /\.minke-about__trigger:focus-visible[\s\S]*outline:/u,
-  );
-  assert.match(
-    aboutStylesSource,
     /\.minke-about__actions\s*\{[\s\S]*justify-content:\s*center[\s\S]*margin:\s*0/u,
   );
   assert.match(
@@ -648,10 +637,6 @@ test("About uses the public sidebar action and packaged desktop metadata", () =>
   assert.match(
     aboutStylesSource,
     /\[data-slot="sidebar\.settings"\]\)\s*\{[\s\S]*padding-right:\s*40px/u,
-  );
-  assert.match(
-    aboutStylesSource,
-    /\.minke-about__action\s*\{[\s\S]*height:\s*38px[\s\S]*box-sizing:\s*border-box/u,
   );
   assert.match(
     aboutStylesSource,
@@ -755,13 +740,6 @@ test("Tabs stays generic while content types register as adapters", () => {
   assert.match(tabsInstallSource, /WEB_TABS_NAMESPACE/u);
 });
 
-test("Data Home primary action keeps readable colors on hover", () => {
-  assert.match(
-    dataHomeStylesSource,
-    /\.minke-data-home__button--primary:hover:not\(:disabled\) \{[\s\S]*background:\s*var\(--dsw-alias-button-primary-hover\);[\s\S]*color:\s*var\(--dsw-alias-label-primary-foreground\);[\s\S]*\}/u,
-  );
-});
-
 test("desktop Session export retains the upstream DSH action", () => {
   assert.doesNotMatch(
     tabsInstallSource,
@@ -770,10 +748,6 @@ test("desktop Session export retains the upstream DSH action", () => {
   assert.doesNotMatch(
     tabsInstallSource,
     /SessionLogHeaderAction as ComponentType<never>/u,
-  );
-  assert.doesNotMatch(
-    tabsInstallSource,
-    /sessionLogsPort\.export\(sessionId\)/u,
   );
   assert.match(
     tabsInstallSource,
@@ -881,10 +855,6 @@ test("the global command palette maps product actions without replacing slash co
   assert.match(
     shortcutInstallSource,
     /"files\.open"[\s\S]*tabsRuntimes\.workspaces\.right[\s\S]*"terminal\.open"[\s\S]*tabsRuntimes\.workspaces\.bottom[\s\S]*"browser\.open"[\s\S]*tabsRuntimes\.workspaces\.right[\s\S]*"plugins\.browse"[\s\S]*tabsRuntimes\.workspaces\.right/u,
-  );
-  assert.match(
-    shortcutInstallSource,
-    /id:\s*"session\.export"[\s\S]*shortcutConfigurable:\s*false[\s\S]*sessionLogsPort\s*\.export\(sessionId\)/u,
   );
   assert.match(
     shortcutInstallSource,

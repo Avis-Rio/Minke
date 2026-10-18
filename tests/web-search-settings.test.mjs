@@ -195,11 +195,12 @@ test("independent web search settings describe explicit calls and restart bounda
   );
   assert.equal(
     html.includes(
-      'aria-describedby="minke-web-search-fallback-help"',
+      `title="${preferencesZh["preferences.webSearch.fallback.help"]}"`,
     ),
     true,
   );
-  assert.equal(html.includes('checked=""'), true);
+  assert.equal(html.includes('role="switch"'), true);
+  assert.equal(html.includes('aria-checked="true"'), true);
   runtime.dispose();
 });
 
