@@ -1,6 +1,5 @@
 /** Shared desktop/renderer contract for the host-backed Files tab. */
 export const TABS_FILES_LIST_CHANNEL = "minke:tabs:files:list";
-export const TABS_FILES_OPEN_CHANNEL = "minke:tabs:files:open";
 export const TABS_FILES_PREVIEW_CHANNEL =
   "minke:tabs:files:preview";
 export const TABS_FILES_WRITE_CHANNEL =
@@ -37,10 +36,6 @@ export type FileManagerEntryKind =
 export interface FileManagerListRequest {
   readonly path?: string;
   readonly includeRepository?: boolean;
-}
-
-export interface FileManagerOpenRequest {
-  readonly path: string;
 }
 
 export interface FileManagerPreviewRequest {
@@ -580,13 +575,6 @@ export function parseFileManagerListRequest(
           includeRepository: candidate.includeRepository,
         }),
   };
-}
-
-export function parseFileManagerOpenRequest(
-  value: unknown,
-): FileManagerOpenRequest {
-  const candidate = record(value, "file open request");
-  return { path: pathText(candidate.path, "file open path") };
 }
 
 export function parseFileManagerPreviewRequest(

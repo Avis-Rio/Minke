@@ -38,5 +38,5 @@ export interface DshTerminalUI {
     visible: boolean;
     onNewTerminal(): void;
   }>;
-  setAppearance(appearance: Partial<TerminalSettings> & { theme?: ITheme }): void;
+  setAppearance(appearance: Partial<Pick<TerminalSettings, "lineHeight">> & { theme?: ITheme }): void;
 }

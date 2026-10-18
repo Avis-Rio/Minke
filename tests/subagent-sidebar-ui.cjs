@@ -40,6 +40,8 @@ async function verifySubagentSidebarUI({
     return parent?.textContent.includes(${JSON.stringify(scenario.parentReply)})
       && parent.querySelector('[data-composer-input][contenteditable="true"]') !== null;
   }`), 'the selected parent conversation');
+  assert.equal(await rendererValue(window, `() => document.querySelector('[data-composer-input][contenteditable="true"]')?.textContent`), '',
+    'the parent composer starts empty after the native Sidebar checks');
   await verifyWindowDrag({ window, rendererValue }, 'active conversation');
 
   await rendererValue(window, `() => {

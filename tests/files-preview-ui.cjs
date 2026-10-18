@@ -7,7 +7,7 @@ const { nativeTheme } = require('electron');
 const { fillsFullscreenViewport } = require('./support/sidebar-geometry.cjs');
 
 /** Runs against the production renderer and DSH document slots, with real local files. */
-async function verifyFilesPreviewUI({ window, rendererValue, waitFor, workspace, click, pressKey, openedFilePaths }) {
+async function verifyFilesPreviewUI({ window, rendererValue, waitFor, workspace, click, pressKey, readOpenedFilePaths }) {
   workspace = await realpath(workspace);
   await Promise.all([
     writeFile(join(workspace, 'preview-notes.md'), '# Rendered notes\n\n**Bold text**\n\n| Name | Value |\n| --- | --- |\n| Preview | Ready |\n'),
@@ -16,10 +16,11 @@ async function verifyFilesPreviewUI({ window, rendererValue, waitFor, workspace,
     writeFile(join(workspace, 'preview-script.js'), 'document.body.dataset.ready="yes";document.querySelector("#counter").onclick=event=>event.target.textContent=Number(event.target.textContent)+1;'),
     writeFile(join(workspace, 'preview-source.ts'), 'export const source = true;\n'),
   ]);
-  if (await rendererValue(window, '() => document.querySelector("[data-dockkit-add-tab]") !== null')) {
-    await click('[data-dockkit-add-tab]');
-    await click('[data-minke-tabs-create-menu] [data-option="files"]');
-  } else await click('[data-sidebar-right-panel] [data-option="files"]');
+  if (await rendererValue(window, '() => document.querySelector("[data-dockkit-add-tab]:not([disabled])") !== null')) {
+    await click('[data-dockkit-add-tab]:not([disabled])');
+  }
+  await waitFor(() => rendererValue(window, '() => document.querySelector("[data-sidebar-right-guide] [data-option=files]") !== null'), 'Files creator on native Start');
+  await click('[data-sidebar-right-guide] [data-option="files"]');
   const host = '.minke-tabs-native-host[data-kind="files"]:not([inert])';
   await waitFor(() => rendererValue(window, `() => document.querySelector('${host} .minke-files-explorer') !== null`), 'new Files instance');
   const openFile = async name => {
@@ -68,6 +69,12 @@ async function verifyFilesPreviewUI({ window, rendererValue, waitFor, workspace,
     await writeFile(`${process.env.MINKE_FILES_PREVIEW_SCREENSHOT}.${label}.png`, (await window.webContents.capturePage(clip)).toPNG());
   };
   await openFile('preview-notes.md');
+  const codeFont = await rendererValue(window, `() => ({
+    setting: getComputedStyle(document.body).getPropertyValue('--dsh-code-font-size').trim(),
+    editor: getComputedStyle(document.querySelector('${host} .cm-editor')).fontSize,
+  })`);
+  assert.equal(codeFont.setting, '12px', 'General code font change survives Settings navigation');
+  assert.equal(codeFont.editor, codeFont.setting, 'Files follows the General code font size');
   await choose('preview');
   await waitFor(() => rendererValue(window, `() => document.querySelector('${host} [data-document-markdown] h1')?.textContent === 'Rendered notes'`), 'DSH Markdown heading');
   assert.equal(await rendererValue(window, `() => document.querySelector('${host} [data-document-markdown] table')?.textContent.includes('Ready')`), true, 'Markdown tables are rendered');
@@ -124,11 +131,11 @@ async function verifyFilesPreviewUI({ window, rendererValue, waitFor, workspace,
   await waitFor(() => rendererValue(window, `() => document.querySelector('${host} .minke-files-preview__state')?.textContent.includes('not in a Git repository')`), 'diff remains accessible');
   await choose('source');
   assert.equal(await rendererValue(window, `() => document.querySelector('${host} .cm-content')?.textContent.includes('Unsaved preview')`), true, 'all three modes retain the draft');
-  const openedBefore = openedFilePaths.length;
+  const openedBefore = (await readOpenedFilePaths()).length;
   await click(more);
   await click(`${menu} [data-option="open-folder"]`);
-  await waitFor(() => openedFilePaths.length === openedBefore + 1, 'containing folder opened');
-  assert.equal(openedFilePaths.at(-1), workspace, 'file jump opens its directory, not the file in a default application');
+  await waitFor(async () => (await readOpenedFilePaths()).length === openedBefore + 1, 'containing folder opened through Session Remote');
+  assert.equal((await readOpenedFilePaths()).at(-1), workspace, 'file jump opens its directory, not the file in a default application');
   assert.equal(await rendererValue(window, `() => document.querySelector('${host} .cm-content')?.textContent.includes('Unsaved preview')`), true, 'opening the containing folder preserves the draft');
   await rendererValue(window, '() => { window.confirm = () => false; return true; }');
   await click(`${host} button[aria-label="Close preview"]`);

@@ -14,6 +14,7 @@ import {
 import {
   minkeWorkspacePorts,
 } from "../host/workspace.ts";
+import { installWorkspacePathActions } from "../host/path-actions.ts";
 import {
   installMobileWebViewport,
   installMobileWebViewportStyles,
@@ -150,6 +151,7 @@ export function installTabs(
 ): TabsRuntimes | undefined {
   const documents = installFilesDocumentPreview(ctx);
   const workspacePorts = minkeWorkspacePorts(ctx.connection);
+  const pathActions = installWorkspacePathActions(ctx);
   const tabsPort = workspacePorts.tabs;
   const agentBrowserPort = desktopAgentBrowserPort();
   const filesPort = workspacePorts.files;
@@ -465,6 +467,7 @@ export function installTabs(
     const filesTabs = filesPort.available
       ? new FilesTabsController(tabs, filesPort, {
           placement,
+          pathActions,
         })
       : undefined;
     const webTabs = tabsPort.embeddedWebAvailable

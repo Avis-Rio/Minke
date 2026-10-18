@@ -67,6 +67,10 @@ export function AgentBrowserTabView({
     const view = host.ownerDocument.createElement(
       "webview",
     ) as WebviewTag;
+    view.setAttribute("data-sidebar-browser-frame", "");
+    view.addEventListener("dom-ready", () => {
+      view.setAttribute("name", `minke-guest-${view.getWebContentsId()}`);
+    });
     configureAgentBrowserWebview(view, {
       partition: tab.payload.partition,
       label: tab.title,

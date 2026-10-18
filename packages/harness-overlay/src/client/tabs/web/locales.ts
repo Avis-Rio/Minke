@@ -3,10 +3,10 @@ import type {
 } from "@minke/harness-overlay/client/tabs/browser-annotation/types.ts";
 
 export const webTabsZh = {
-  "web.create.label": "浏览器",
+  "web.create.label": "常驻浏览器",
   "web.tab.new": "新标签页",
-  "web.blank.title": "开始浏览",
-  "web.blank.body": "输入网址或使用 Google 搜索",
+  "web.blank.title": "常驻浏览器",
+  "web.blank.body": "输入网址或使用 Google 搜索，登录状态将在下次打开时保留。",
   "web.nav.back": "后退",
   "web.nav.forward": "前进",
   "web.nav.reload": "重新加载",
@@ -72,10 +72,10 @@ export function webAnnotationLabels(
 }
 
 export const webTabsEn: Record<WebTabsLocaleKey, string> = {
-  "web.create.label": "Browser",
+  "web.create.label": "Persistent Browser",
   "web.tab.new": "New tab",
-  "web.blank.title": "Start browsing",
-  "web.blank.body": "Enter a URL or search Google",
+  "web.blank.title": "Persistent Browser",
+  "web.blank.body": "Enter a URL or search Google. Sign-ins are kept for the next time you open a tab.",
   "web.nav.back": "Back",
   "web.nav.forward": "Forward",
   "web.nav.reload": "Reload",

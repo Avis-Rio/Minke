@@ -1,6 +1,7 @@
 import {
   useEffect,
   useRef,
+  useState,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
@@ -13,7 +14,7 @@ import type {
   PageTitleUpdatedEvent,
   WebviewTag,
 } from "electron";
-import { configureWebGuest } from "./guest.ts";
+import { mountPersistentBrowser } from "./guest.ts";
 import {
   parseWebTabLocalPathRequest,
   TABS_WEB_LOCAL_PATH_CHANNEL,
@@ -74,6 +75,9 @@ export function WebTabView({
 }: WebTabViewProps): ReactNode {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<WebviewTag | null>(null);
+  const currentTab = useRef(tab);
+  currentTab.current = tab;
+  const [attempt, setAttempt] = useState(0);
   const canCreateView = tab.payload.url !== undefined;
   const annotation = useSyncExternalStore(
     (listener) => controller.annotation.subscribe(
@@ -98,11 +102,22 @@ export function WebTabView({
     const view = host.ownerDocument.createElement(
       "webview",
     ) as WebviewTag;
-    configureWebGuest(view, { url: initialUrl, label: tab.title, allowPopups });
-    viewRef.current = view;
-
-    const detach = controller.attach(tab.id, view);
+    let detach = (): void => {};
     const releaseDecoration = decorateGuest?.(view);
+    const disposeGuest = mountPersistentBrowser(host, view, {
+      label: tab.title, allowPopups,
+      ready() {
+        viewRef.current = view;
+        detach = controller.attach(tab.id, view);
+        controller.navigate(tab.id, currentTab.current.payload.url ?? initialUrl);
+      },
+      openRequested: url => controller.openRequested(url),
+      failed(error) {
+        detach();
+        viewRef.current = null;
+        controller.update(tab.id, { loading: false, error: error instanceof Error ? error.message : String(error) });
+      },
+    });
     const handleStart = (): void => {
       controller.pageChanged(tab.id);
       syncNavigation(controller, tab.id, {
@@ -178,8 +193,6 @@ export function WebTabView({
     );
     view.addEventListener("did-fail-load", handleFailure);
     view.addEventListener("ipc-message", handleIpcMessage);
-    host.append(view);
-
     return () => {
       view.removeEventListener("did-start-loading", handleStart);
       view.removeEventListener("did-stop-loading", handleStop);
@@ -197,10 +210,10 @@ export function WebTabView({
       view.removeEventListener("ipc-message", handleIpcMessage);
       releaseDecoration?.();
       detach();
-      view.remove();
+      disposeGuest();
       viewRef.current = null;
     };
-  }, [canCreateView, controller, tab.id, decorateGuest, allowPopups]);
+  }, [canCreateView, controller, tab.id, decorateGuest, allowPopups, attempt]);
 
   useEffect(() => {
     viewRef.current?.setAttribute("aria-label", tab.title);
@@ -238,7 +251,7 @@ export function WebTabView({
           <div className="minke-tabs-error__actions">
             <button
               type="button"
-              onClick={() => controller.retry(tab.id)}
+              onClick={() => viewRef.current === null ? setAttempt(value => value + 1) : controller.retry(tab.id)}
             >
               {t("web.error.retry")}
             </button>

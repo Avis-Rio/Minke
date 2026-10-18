@@ -10,14 +10,14 @@ import type {
   FileManagerWriteResult,
 } from "./tabs/files-contract.ts";
 
-export const MINKE_HOST_RPC_CHANNEL = "/minke";
-export const MINKE_HOST_PROTOCOL_VERSION = 3;
+export const MINKE_HOST_RPC_CHANNEL = "/api";
+export const minkeHostEndpoint = (endpoint: MinkeHostRpcEndpoint): string => `minke/${endpoint}`;
+export const MINKE_HOST_PROTOCOL_VERSION = 5;
 
 export interface MinkeHostCapabilities {
   readonly protocolVersion: typeof MINKE_HOST_PROTOCOL_VERSION;
   readonly files: {
     readonly available: true;
-    readonly nativeOpen: false;
     readonly root: string;
     readonly watch: false;
     readonly write: true;
@@ -61,20 +61,6 @@ export type MinkeHostRpcResponse<
   Endpoint extends MinkeHostRpcEndpoint,
 > = MinkeHostRpcMap[Endpoint]["response"];
 
-export const MINKE_HOST_RPC_ENDPOINTS = Object.freeze({
-  capabilities: true,
-  "files.diff": true,
-  "files.list": true,
-  "files.preview": true,
-  "files.write": true,
-} satisfies Readonly<Record<MinkeHostRpcEndpoint, true>>);
-
-export function isMinkeHostRpcEndpoint(
-  value: string,
-): value is MinkeHostRpcEndpoint {
-  return Object.hasOwn(MINKE_HOST_RPC_ENDPOINTS, value);
-}
-
 function record(
   value: unknown,
   label: string,
@@ -105,7 +91,6 @@ export function parseMinkeHostCapabilities(
   if (
     candidate.protocolVersion !== MINKE_HOST_PROTOCOL_VERSION ||
     files.available !== true ||
-    files.nativeOpen !== false ||
     typeof files.root !== "string" ||
     files.root.length === 0 ||
     files.watch !== false ||
@@ -120,7 +105,6 @@ export function parseMinkeHostCapabilities(
     protocolVersion: MINKE_HOST_PROTOCOL_VERSION,
     files: {
       available: true,
-      nativeOpen: false,
       root: files.root,
       watch: false,
       write: true,

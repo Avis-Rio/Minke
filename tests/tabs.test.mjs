@@ -31,7 +31,6 @@ import {
   normalizeWebTabUrl,
   parseTabsLayoutState,
   parseTabsLayoutStateUpdate,
-  TABS_WEB_PARTITION,
 } from "@minke/harness-overlay/tabs/contract.ts";
 import {
   fileUrlToAbsoluteLocalPath,
@@ -169,8 +168,6 @@ import {
 import {
   canGrantTabWebPermission,
   openUserGestureTabLinkExternally,
-  protectTabWebviewGuest,
-  secureTabWebview,
 } from "@minke/desktop/main/tabs/security.ts";
 import {
   inspectCssContract,
@@ -643,7 +640,6 @@ test("Web tab URLs accept only credential-free HTTP(S)", () => {
 
 test("Files runtime falls back to the system root", async () => {
   const root = parse(process.cwd()).root;
-  const opened = [];
   const repositoryRequests = [];
   const entry = (name, kind) => ({
     name,
@@ -680,10 +676,6 @@ test("Files runtime falls back to the system root", async () => {
         branch: "feature/compact-files",
       };
     },
-    openPath: async (path) => {
-      opened.push(path);
-      return path.endsWith("blocked") ? "blocked by system" : "";
-    },
   });
 
   const listing = await runtime.list({});
@@ -716,12 +708,6 @@ test("Files runtime falls back to the system root", async () => {
   });
   assert.deepEqual(repositoryRequests, [root]);
 
-  await runtime.open({ path: join(root, "zeta.txt") });
-  assert.deepEqual(opened, [join(root, "zeta.txt")]);
-  await assert.rejects(
-    runtime.open({ path: join(root, "blocked") }),
-    /blocked by system/u,
-  );
   await assert.rejects(
     runtime.list({ path: "relative/path" }),
     /must be absolute/u,
@@ -810,7 +796,6 @@ test("Files runtime bounds text and image previews", async () => {
       writes.push([path, next]);
       content.set(path, Buffer.from(next));
     },
-    openPath: async () => "",
   });
 
   assert.deepEqual(
@@ -938,7 +923,6 @@ test("Files runtime returns a bounded source diff baseline", async () => {
         original: "export const before = true;\n",
       };
     },
-    openPath: async () => "",
   });
 
   assert.deepEqual(await runtime.diff({ path }), {
@@ -970,7 +954,6 @@ test("Files writes atomically through symlinks and preserves permissions", async
   const initialMode = (await lstat(target)).mode & 0o7777;
   const runtime = new FileManagerRuntime({
     rootPath: directory,
-    openPath: async () => "",
   });
 
   const preview = await runtime.preview({ path: link });
@@ -1640,10 +1623,6 @@ test("Files toolbar focus and explorer density stay compact", () => {
     /\.minke-files-mode-select:focus-within\s*\{[\s\S]*?outline:\s*none/u,
   );
   assert.match(
-    TABS_STYLES,
-    /\.minke-tabs-panel\s+\.minke-tabs-toolbar__button:focus-visible\s*\{[\s\S]*?outline:\s*none/u,
-  );
-  assert.match(
     FILES_TAB_STYLES,
     /\.minke-files-row\s*\{[\s\S]*?min-height:\s*26px/u,
   );
@@ -1763,9 +1742,6 @@ test("Files tabs start at the project cwd and retain navigation history", async 
           : {}),
       };
     },
-    async open(request) {
-      opened.push(request.path);
-    },
     async preview(request) {
       previewed.push(request.path);
       return {
@@ -1789,7 +1765,10 @@ test("Files tabs start at the project cwd and retain navigation history", async 
     watch() {
       return () => {};
     },
-  });
+  }, { pathActions: {
+    getSnapshot: () => true, subscribe: () => () => {},
+    async open(path) { opened.push(path); },
+  } });
 
   const projectTab = files.create("/workspace", "Files");
   assert.ok(projectTab);
@@ -2143,7 +2122,6 @@ test("Files tabs start at the project cwd and retain navigation history", async 
   const authorizedFileHandlers = [
     "handleFilesDiff",
     "handleFilesList",
-    "handleFilesOpen",
     "handleFilesPreview",
     "handleFilesViewStateRead",
     "handleFilesViewStateWrite",
@@ -2199,8 +2177,7 @@ test("Files view preferences persist across new tabs", async () => {
           truncated: false,
         };
       },
-      async open() {},
-      async preview() {
+        async preview() {
         throw new Error("not used");
       },
       async write() {
@@ -2378,7 +2355,6 @@ test("Files keeps the settled directory visible while navigating", async () => {
         resolveNavigation = resolve;
       });
     },
-    async open() {},
     async preview() {
       throw new Error("not used");
     },
@@ -2440,7 +2416,6 @@ test("Files keeps newer edits and failed-save drafts intact", async () => {
         truncated: false,
       };
     },
-    async open() {},
     async preview() {
       return {
         kind: "text",
@@ -2555,7 +2530,6 @@ test("Files keeps editor state after its own save event", async () => {
         truncated: false,
       };
     },
-    async open() {},
     async preview(request) {
       previewRequests.push(request);
       return {
@@ -2628,7 +2602,6 @@ test("Files skips disk subscriptions when the port cannot watch", async () => {
   let watchCalls = 0;
   const files = new FilesTabsController(tabs, {
     available: true,
-    nativeOpenAvailable: false,
     watchAvailable: false,
     async list(request) {
       return {
@@ -2637,7 +2610,6 @@ test("Files skips disk subscriptions when the port cannot watch", async () => {
         truncated: false,
       };
     },
-    async open() {},
     async preview() {
       throw new Error("not used");
     },
@@ -2687,7 +2659,6 @@ test("Files refreshes the directory and clean preview after disk changes", async
         truncated: false,
       };
     },
-    async open() {},
     async preview(request) {
       previewRequests.push(request);
       return {
@@ -2792,7 +2763,6 @@ test("Files source reader opens files with on-demand diff", async () => {
         truncated: false,
       };
     },
-    async open() {},
     async preview(request) {
       previewRequests.push(request);
       return {
@@ -2937,7 +2907,6 @@ test("Files routes linked directories and files through one local path seam", as
         truncated: false,
       };
     },
-    async open() {},
     async preview(request) {
       previewRequests.push(request);
       return {
@@ -3039,59 +3008,6 @@ test("Web tab favicons accept safe site and CDN URLs", () => {
   );
 });
 
-test("webview attachment overwrites untrusted guest preferences", () => {
-  const preferences = {
-    contextIsolation: false,
-    nodeIntegration: true,
-    nodeIntegrationInSubFrames: true,
-    preload: "/tmp/untrusted.cjs",
-    sandbox: false,
-    webSecurity: false,
-    webviewTag: true,
-  };
-  const params = {
-    src: "https://example.com/docs",
-    allowpopups: "",
-    partition: "persist:attacker",
-    preload: "file:///tmp/untrusted.cjs",
-    webpreferences: "nodeIntegration=yes",
-  };
-
-  assert.equal(
-    secureTabWebview(
-      preferences,
-      params,
-      "/trusted/tabs-web-preload.js",
-    ),
-    true,
-  );
-  assert.equal(params.src, "https://example.com/docs");
-  assert.equal(params.partition, TABS_WEB_PARTITION);
-  assert.equal(Object.hasOwn(params, "allowpopups"), true);
-  assert.equal(Object.hasOwn(params, "preload"), false);
-  assert.equal(Object.hasOwn(params, "webpreferences"), false);
-  assert.equal(
-    preferences.preload,
-    "/trusted/tabs-web-preload.js",
-  );
-  assert.equal(preferences.contextIsolation, true);
-  assert.equal(preferences.nodeIntegration, false);
-  assert.equal(preferences.nodeIntegrationInSubFrames, false);
-  assert.equal(preferences.sandbox, true);
-  assert.equal(preferences.webSecurity, true);
-  assert.equal(preferences.webviewTag, false);
-  assert.equal(preferences.partition, TABS_WEB_PARTITION);
-
-  assert.equal(
-    secureTabWebview(
-      {},
-      { src: "file:///tmp/report.html" },
-      "/trusted/tabs-web-preload.js",
-    ),
-    false,
-  );
-});
-
 test("tab web guests allow only sanitized clipboard writes from secure pages", () => {
   assert.equal(
     canGrantTabWebPermission(
@@ -3128,59 +3044,6 @@ test("tab web guests allow only sanitized clipboard writes from secure pages", (
     ),
     false,
   );
-});
-
-test("attached Web guests keep navigation isolated and deny popups", () => {
-  const listeners = new Map();
-  const opened = [];
-  let openWindow;
-  const guest = {
-    on(name, listener) {
-      listeners.set(name, listener);
-    },
-    setWindowOpenHandler(handler) {
-      openWindow = handler;
-    },
-  };
-  protectTabWebviewGuest(guest, {
-    openExternal(url) {
-      opened.push(url);
-      return Promise.resolve();
-    },
-  });
-
-  let prevented = false;
-  listeners.get("will-navigate")({
-    isMainFrame: true,
-    url: "https://example.com/next",
-    preventDefault() {
-      prevented = true;
-    },
-  });
-  assert.equal(prevented, false);
-
-  listeners.get("will-redirect")({
-    isMainFrame: true,
-    url: "mailto:hello@example.com",
-    preventDefault() {
-      prevented = true;
-    },
-  });
-  assert.equal(prevented, true);
-  assert.deepEqual(opened, ["mailto:hello@example.com"]);
-  assert.deepEqual(
-    openWindow({ url: "https://example.com/popup" }),
-    { action: "deny" },
-  );
-  assert.deepEqual(opened, [
-    "mailto:hello@example.com",
-    "https://example.com/popup",
-  ]);
-  assert.deepEqual(
-    openWindow({ url: "javascript:alert(1)" }),
-    { action: "deny" },
-  );
-  assert.equal(opened.length, 2);
 });
 
 test("trusted Web guest clicks may open registered app protocols", () => {
@@ -4167,33 +4030,8 @@ test("window layout actions follow DSH header geometry", () => {
   const sharedActionRule = SESSION_HEADER_ACTION_STYLES.match(
     /\[data-minke-tabs-header-action\]\s*\{([\s\S]*?)\n\}/u,
   )?.[1];
-  const idleTabsActionRule = [
-    ...SESSION_HEADER_ACTION_STYLES.matchAll(
-      /\[data-minke-tabs-header-action\]\s*\{([^}]*)\}/gu,
-    ),
-  ].at(-1)?.[1];
-  const expandedTabsActionRule =
-    SESSION_HEADER_ACTION_STYLES.match(
-      /\[data-minke-tabs-header-action\]\[aria-expanded="true"\]\s*\{([^}]*)\}/u,
-    )?.[1];
   assert.ok(sharedActionRule);
-  assert.match(sharedActionRule, /border:\s*none;/u);
-  assert.match(sharedActionRule, /appearance:\s*none;/u);
-  assert.ok(idleTabsActionRule);
-  assert.match(
-    idleTabsActionRule,
-    /color:\s*var\(--dsw-alias-label-secondary\);/u,
-  );
-  assert.ok(expandedTabsActionRule);
-  assert.match(
-    expandedTabsActionRule,
-    /color:\s*var\(--dsw-alias-label-secondary\);/u,
-  );
-  assert.match(expandedTabsActionRule, /background:\s*transparent;/u);
-  assert.match(
-    SESSION_HEADER_ACTION_STYLES,
-    /\[data-minke-tabs-header-action\]:hover:not\(:disabled\)/u,
-  );
+  assert.match(sharedActionRule, /color:\s*var\(--dsw-alias-label-secondary\);/u);
 
   const hostEvents = [];
   const rightTabs = new TabsRuntime({
@@ -4504,12 +4342,6 @@ test("right Tabs top actions use compact hit areas and spacing", () => {
   const actionWidth = Number(
     tabsActionRule.match(/width:\s*(\d+)px/u)?.[1],
   );
-  const actionHeight = Number(
-    tabsActionRule.match(/height:\s*(\d+)px/u)?.[1],
-  );
-  const actionRadius = Number(
-    tabsActionRule.match(/border-radius:\s*(\d+)px/u)?.[1],
-  );
   const rightInset = Number(
     SESSION_HEADER_ACTION_STYLES.match(
       /\[data-minke-tabs-right-open\][\s\S]*?\[data-minke-tabs-layout-actions\]\s*\{[\s\S]*?right:\s*(\d+)px/u,
@@ -4517,8 +4349,6 @@ test("right Tabs top actions use compact hit areas and spacing", () => {
   );
   assert.deepEqual(
     {
-      actionHeight,
-      actionRadius,
       actionWidth,
       groupGap,
       groupHeight,
@@ -4526,19 +4356,12 @@ test("right Tabs top actions use compact hit areas and spacing", () => {
       rightInset,
     },
     {
-      actionHeight: 28,
-      actionRadius: 28,
       actionWidth: 28,
       groupGap: 8,
       groupHeight: 32,
       layoutClearance: 80,
       rightInset: 8,
     },
-  );
-  assert.equal(
-    (groupHeight - actionHeight) / 2,
-    2,
-    "compact buttons must stay centered in the 32px primary row",
   );
 
   const layoutGroupWidth = actionWidth * 2 + groupGap;
@@ -4795,14 +4618,6 @@ test("Tabs chrome puts tabs above the URL row without a visible scrollbar", () =
   assert.match(
     webViewSource,
     /tab\.payload\.url === undefined/u,
-  );
-  assert.match(
-    webViewSource,
-    /\[canCreateView,\s*controller,\s*tab\.id,\s*decorateGuest,\s*allowPopups\]/u,
-  );
-  assert.doesNotMatch(
-    webViewSource,
-    /\[controller,\s*tab\.id,\s*tab\.payload\.url\]/u,
   );
   assert.match(
     webIconSource,

@@ -622,8 +622,8 @@
   background: var(--minke-code-background);
   color: var(--minke-code-foreground);
   font-family: var(--ds-font-family-code);
-  font-size: 11px;
-  line-height: 18px;
+  font-size: var(--dsh-code-font-size, 11px);
+  line-height: calc(var(--dsh-code-font-size, 11px) + 7px);
 }
 
 .minke-files-preview__editor .cm-editor.cm-focused {

@@ -53,17 +53,17 @@ export class TerminalSettingsRuntime {
     return this.#initializePromise;
   }
 
-  update(patch: Partial<TerminalSettings>): void {
+  update(patch: Pick<TerminalSettings, "lineHeight">): void {
     this.#assertEditable();
     this.#commit({
       ...this.#snapshot.settings,
-      ...patch,
+      lineHeight: patch.lineHeight,
     });
   }
 
   reset(): void {
     this.#assertEditable();
-    this.#commit(DEFAULT_TERMINAL_SETTINGS);
+    this.#commit({ ...this.#snapshot.settings, lineHeight: DEFAULT_TERMINAL_SETTINGS.lineHeight });
   }
 
   /** Await queued persistence, primarily for deterministic shutdown/tests. */

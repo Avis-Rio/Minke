@@ -79,14 +79,14 @@ test('both terminal placements use the provider screen and the same live appeara
     useTabInfo: () => ({ tab: { id: 'native', visible: true, actions: { openTab() {} } } }), view: () => model,
   });
   assert.equal(native.type, ctx.terminalUI.View);
-  ctx.terminalUI.setAppearance({ fontFamily: 'Monaco', fontSize: 17, lineHeight: 1.4, theme: { background: '#123456' } });
+  ctx.terminalUI.setAppearance({ lineHeight: 1.4, theme: { background: '#123456' } });
   const left = ctx.terminalUI.View(native.props);
   const bottom = ctx.terminalUI.View({ model, visible: true, onNewTerminal() {} });
   assert.equal(left.type, bottom.type);
   assert.deepEqual(left.props.appearance, bottom.props.appearance);
-  assert.equal(bottom.props.appearance.fontSize, 17);
-  ctx.terminalUI.setAppearance({ fontSize: 20 });
-  assert.equal(ctx.terminalUI.View(native.props).props.appearance.fontSize, 20);
+  assert.equal(bottom.props.appearance.lineHeight, 1.4);
+  ctx.terminalUI.setAppearance({ lineHeight: 1.6 });
+  assert.equal(ctx.terminalUI.View(native.props).props.appearance.lineHeight, 1.6);
 });
 
 test('shared native palettes preserve application OSC overrides and reset to current preferences', () => {
@@ -122,6 +122,7 @@ test('shared native palettes preserve application OSC overrides and reset to cur
 test('DSH retains Sidebar and bottom window holds independently', async () => {
   const streams = [];
   const ctx = new cordis.Context();
+  ctx.provide('connection', { generation: observable(1) });
   ctx.provide('remote', { $stream(options) {
     const end = Promise.withResolvers();
     const stream = { id: options.open(new AbortController().signal), disposed: false, async dispose() { this.disposed = true; end.resolve(); }, async *[Symbol.asyncIterator]() { await end.promise; } };
@@ -209,16 +210,20 @@ test('without a main Session, explicit creation waits for DSH to create one', as
   w.controller.dispose();
 });
 
-test('existing font preferences and code palette are published together and cleaned up', async () => {
+test('Minke publishes spacing and palette without overriding DSH typography', async () => {
   const changes = [];
   const settings = new TerminalSettingsRuntime({ available: true, read: async () => ({ fontFamily: 'Monaco', fontSize: 16, lineHeight: 1.3 }), write: async () => {} });
   const themes = new CodeThemeSettingsRuntime({ available: false }, 'dark');
   await settings.initialize();
   const release = connectTerminalAppearance({ setAppearance: value => changes.push(value) }, settings, themes);
-  assert.equal(changes.at(-1).fontFamily, 'Monaco');
-  settings.update({ fontSize: 18 });
-  assert.equal(changes.at(-1).fontSize, 18);
+  assert.equal(changes.at(-1).fontFamily, undefined);
+  assert.equal(changes.at(-1).fontSize, undefined);
+  settings.update({ lineHeight: 1.5 });
+  assert.equal(changes.at(-1).lineHeight, 1.5);
   assert.ok(changes.at(-1).theme.background);
+  settings.reset();
+  assert.equal(settings.getSnapshot().settings.fontFamily, 'Monaco', 'reset retains the legacy font backup');
+  assert.equal(settings.getSnapshot().settings.fontSize, 16);
   release();
   await tick();
   assert.deepEqual(changes.at(-1), {});

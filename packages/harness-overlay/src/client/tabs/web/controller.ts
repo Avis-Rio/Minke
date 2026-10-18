@@ -339,6 +339,12 @@ export class WebTabsController {
     }
   }
 
+  /** Persistent tabs retain Minke's external-window link preference. */
+  openRequested(candidate: string): void {
+    const url = normalizeWebTabUrl(candidate);
+    if (url !== undefined) this.#desktop.openExternal(url);
+  }
+
   openLocalPath(request: WebTabLocalPathRequest): boolean {
     return this.#openLocalPath?.(request) ?? false;
   }

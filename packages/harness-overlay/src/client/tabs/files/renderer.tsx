@@ -1,5 +1,6 @@
-import type {
-  ReactNode,
+import {
+  useSyncExternalStore,
+  type ReactNode,
 } from "react";
 import {
   ToolbarButton,
@@ -119,6 +120,19 @@ function leadingActions(
   );
 }
 
+function OpenSystemAction({ tab, controller, t }: {
+  tab: ManagedTab; controller: FilesTabsController; t: FilesTabsTranslate;
+}): ReactNode {
+  const paths = controller.pathActions;
+  const available = useSyncExternalStore(paths.subscribe, paths.getSnapshot, paths.getSnapshot);
+  if (!available) return null;
+  return <ToolbarButton label={t("files.nav.openSystem")}
+    disabled={!isFilesTab(tab) || tab.payload.path === undefined}
+    onClick={() => {
+      if (isFilesTab(tab) && tab.payload.path !== undefined) controller.open(tab.id, tab.payload.path);
+    }}><OpenFolderIcon /></ToolbarButton>;
+}
+
 /** Host-backed Files renderer registered beside Web and Terminal. */
 export function createFilesTabRenderer(
   controller: FilesTabsController,
@@ -145,27 +159,7 @@ export function createFilesTabRenderer(
     renderIcon: () => <FilesIcon size={13} />,
     renderLeadingActions: (tab) =>
       leadingActions(tab, controller, t),
-    renderTrailingActions: (tab) =>
-      controller.nativeOpenAvailable
-        ? (
-        <ToolbarButton
-          label={t("files.nav.openSystem")}
-          disabled={
-            !isFilesTab(tab) || tab.payload.path === undefined
-          }
-          onClick={() => {
-            if (
-              isFilesTab(tab) &&
-              tab.payload.path !== undefined
-            ) {
-              controller.open(tab.id, tab.payload.path);
-            }
-          }}
-        >
-          <OpenFolderIcon />
-        </ToolbarButton>
-        )
-        : null,
+    renderTrailingActions: tab => <OpenSystemAction tab={tab} controller={controller} t={t} />,
     renderToolbarCenter: (tab) =>
       isFilesTab(tab)
         ? (

@@ -27,7 +27,7 @@ export class NativeTabsRuntime implements TabsLayoutDelegate {
   #surfaces = new Map<string, NativeTabSurface>();
   #revision = 0;
   #syncing = false;
-  #createTarget: { replaceTab?: string; paneId?: string } | undefined;
+  #createTarget: { replaceTab: string } | undefined;
   #pending: PendingIntent[] = [];
   #activationRequested = false;
 
@@ -122,16 +122,6 @@ export class NativeTabsRuntime implements TabsLayoutDelegate {
     if (!this.#sessionId || !this.#surfaces.get(this.#sessionId)?.tabs.some(tab => tab.id === tabId)) return;
     const previous = this.#createTarget;
     this.#createTarget = { replaceTab: tabId };
-    try { create(); }
-    finally { this.#createTarget = previous; }
-  }
-
-  /** The add menu's pane stays authoritative even if another pane gains focus. */
-  createInPane(sessionId: string, paneId: string, create: () => void): void {
-    this.#sync();
-    if (!this.active || sessionId !== this.#sessionId || !this.#surfaces.get(sessionId)?.paneIds.includes(paneId)) return;
-    const previous = this.#createTarget;
-    this.#createTarget = { paneId };
     try { create(); }
     finally { this.#createTarget = previous; }
   }

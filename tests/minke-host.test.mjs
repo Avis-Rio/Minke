@@ -19,6 +19,8 @@ import {
 import {
   MINKE_HOST_PROTOCOL_VERSION,
   MINKE_HOST_RPC_CHANNEL,
+  minkeHostEndpoint,
+  parseMinkeHostCapabilities,
 } from "@minke/harness-overlay/minke-host-contract.ts";
 import {
   MINKE_PWA_ROUTES,
@@ -47,6 +49,53 @@ import {
   RemotePreviewRuntime,
 } from "@minke/harness-overlay/host/remote-preview.ts";
 
+// Exercise the released Gateway and shared Connection without Minke bundle patches.
+import { Context } from "../vendor/deepseek-harness/vendor/cordis/lib/index.js";
+import { TypertRegistry } from "../vendor/deepseek-harness/packages/typert/registry/lib/index.js";
+import { TypertGatewayService } from "../vendor/deepseek-harness/packages/api/gateway/lib/index.js";
+import { RemoteAccessService } from "../vendor/deepseek-harness/packages/api/remote-access/lib/index.js";
+import { HostConnectionService } from "../vendor/deepseek-harness/packages/client/connection/lib/index.js";
+
+async function workspaceApi(t) {
+  const root = new Context();
+  const fibers = [];
+  t.after(async () => { for (const fiber of fibers.reverse()) await fiber.dispose(); });
+  const mount = (plugin, config) => {
+    const fiber = root.plugin(plugin, config);
+    fibers.push(fiber);
+    return fiber;
+  };
+  await mount(TypertRegistry);
+  await mount({ apply(ctx) {
+    new HostConnectionService(ctx, [], { isAuthenticated: () => true });
+  } });
+  await mount(RemoteAccessService);
+  await mount(TypertGatewayService, {});
+  const transport = root.connection.createSharedFetchHandler("/api");
+  const createPeer = (principal) => {
+    const peer = root.connection.createPeer({ principal });
+    t.after(() => peer.dispose());
+    return peer;
+  };
+  const owner = createPeer({ kind: "owner" });
+  const call = async (endpoint, payload = {}, signal, peer = owner) => {
+    const method = minkeHostEndpoint(endpoint);
+    const response = await transport.fetch(new Request(`http://localhost/api/${method}`, {
+      method: "POST", signal,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "client-request", rpcId: "workspace-test", method,
+        payload: { args: endpoint === "capabilities" ? payload : { request: payload } } }),
+    }), peer);
+    if (response.status === 404) return { status: 404 };
+    assert.equal(response.status, 200);
+    const envelope = await response.json();
+    assert.equal(envelope.type, "server-response");
+    assert.equal(envelope.rpcId, "workspace-test");
+    return envelope.result;
+  };
+  return { mount, call, createPeer };
+}
+
 function memoryStorage() {
   const values = new Map();
   return {
@@ -64,7 +113,6 @@ function hostCapabilities(root = "/host/home") {
     protocolVersion: MINKE_HOST_PROTOCOL_VERSION,
     files: {
       available: true,
-      nativeOpen: false,
       root,
       watch: false,
       write: true,
@@ -76,6 +124,16 @@ function hostCapabilities(root = "/host/home") {
     },
   };
 }
+
+test("Files capability protocol 5 drops native opening and rejects older handshakes", () => {
+  const capabilities = hostCapabilities();
+  assert.equal(capabilities.protocolVersion, 5);
+  assert.deepEqual(parseMinkeHostCapabilities(capabilities), capabilities);
+  const legacy = { ...capabilities, protocolVersion: 4,
+    files: { ...capabilities.files, nativeOpen: false } };
+  assert.throws(() => parseMinkeHostCapabilities(legacy), /capabilities are incompatible/u);
+  assert.deepEqual(Object.keys(capabilities.files).sort(), ["available", "root", "watch", "write"]);
+});
 
 test("Minke Host applies trusted-host replacements over its private process channel", () => {
   const port = new EventEmitter();
@@ -279,6 +337,7 @@ function agentTurnHistoryWithProducedFiles(operationId) {
           turn,
           step: 1,
           message: resultMessage("write-ok"),
+          meta: { path: join(tmpdir(), "demo.html") },
         },
       },
     },
@@ -330,7 +389,7 @@ function agentTurnHistoryWithProducedFiles(operationId) {
           name: "str_replace_editor",
           arguments: JSON.stringify({
             command: "insert",
-            path: "notes.txt",
+            path: join(tmpdir(), "notes.txt"),
             insert_line: 0,
             new_str: "Minke",
           }),
@@ -1204,7 +1263,7 @@ test("Minke Host publishes previews only for successful produced files", async (
 
   assert.deepEqual(published, [{
     operationId,
-    paths: ["demo.html", "notes.txt"],
+    paths: [join(tmpdir(), "demo.html"), join(tmpdir(), "notes.txt")],
     sessionId: "minke-im-weixin-preview-session",
     turn: 3,
   }]);
@@ -1219,6 +1278,38 @@ test("Minke Host publishes previews only for successful produced files", async (
       route: "/minke-preview/abcdefghijklmnopqrstuv/",
     }],
   });
+});
+
+test("produced previews use canonical write results across working-directory changes", async () => {
+  const operationId = "weixin:directory-changes";
+  const history = agentTurnHistoryWithProducedFiles(operationId);
+  const paths = {
+    "write-ok": join(tmpdir(), "checkout-one", "demo.html"),
+    "edit-ok": join(tmpdir(), "checkout-two", "notes.txt"),
+    "read-only": join(tmpdir(), "checkout-two", "not-produced.html"),
+    "write-failed": join(tmpdir(), "checkout-two", "failed.html"),
+  };
+  for (const { event } of history) {
+    if (event.type === "tool/call" && event.data.callId === "edit-ok") {
+      event.data.name = "edit";
+      event.data.arguments = JSON.stringify({ file_path: "notes.txt" });
+    }
+    if (event.type === "tool/result") event.data.meta = { path: paths[event.data.message.source.callId] };
+  }
+  let published;
+  const execute = () => runAgentTurnInHarness({
+    create: async request => request,
+    inspect: async () => inspectedAgentTurn(history),
+    prompt: async () => { throw new Error("must reuse the committed operation"); },
+  }, { operationId, sessionId: "minke-im-paths", text: "build it" }, new AbortController().signal, {
+    previewPublisher: { async publish(input) { published = input.paths; return []; } },
+  });
+  await execute();
+  assert.deepEqual(published, [paths["write-ok"], paths["edit-ok"]]);
+  published = undefined;
+  for (const { event } of history) delete event.data.meta;
+  await execute();
+  assert.equal(published, undefined, "relative legacy arguments cannot select a file in the wrong directory");
 });
 
 test("Minke Host cancellation detaches while an operation remains single-flight", async () => {
@@ -1457,11 +1548,6 @@ test("Minke Host calibrates identity only for external IM agents", async (t) => 
     },
     connection: {
       replaceTrustedHosts() {},
-      rpc: {
-        handle() {
-          return async () => {};
-        },
-      },
     },
     on(event, listener) {
       if (event === "agent/created") onAgentCreated = listener;
@@ -1477,6 +1563,8 @@ test("Minke Host calibrates identity only for external IM agents", async (t) => 
     },
   };
 
+  const api = await workspaceApi(t);
+  context.plugin = api.mount;
   applyMinkeHost(context, { rootPath: tmpdir() });
   assert.equal(typeof onAgentCreated, "function");
 
@@ -1542,9 +1630,8 @@ test("Remote preview snapshots HTML behind a durable capability route", async (t
     });
   const firstRuntime = createRuntime();
   const first = await firstRuntime.publish({
-    cwd: root,
     operationId: "minke-im-agent-reply:operation-1",
-    paths: ["demo.html"],
+    paths: [join(root, "demo.html")],
   });
   const request = async (route, method, url) => {
     let status;
@@ -1604,9 +1691,8 @@ test("Remote preview snapshots HTML behind a durable capability route", async (t
   firstRuntime.dispose();
   const secondRuntime = createRuntime();
   const recovered = await secondRuntime.publish({
-    cwd: root,
     operationId: "minke-im-agent-reply:operation-1",
-    paths: ["demo.html"],
+    paths: [join(root, "demo.html")],
   });
   secondRuntime.dispose();
 
@@ -1670,9 +1756,8 @@ test("Remote preview recovers JSON-escaped near-limit snapshots after restart", 
     });
   const firstRuntime = createRuntime();
   const first = await firstRuntime.publish({
-    cwd: root,
     operationId: "minke-im-agent-reply:escaped-operation",
-    paths: ["escaped.html"],
+    paths: [join(root, "escaped.html")],
   });
   firstRuntime.dispose();
 
@@ -1686,9 +1771,8 @@ test("Remote preview recovers JSON-escaped near-limit snapshots after restart", 
   await rm(sourcePath);
   const secondRuntime = createRuntime();
   const recovered = await secondRuntime.publish({
-    cwd: root,
     operationId: "minke-im-agent-reply:escaped-operation",
-    paths: ["escaped.html"],
+    paths: [join(root, "escaped.html")],
   });
   secondRuntime.dispose();
 
@@ -1696,7 +1780,7 @@ test("Remote preview recovers JSON-escaped near-limit snapshots after restart", 
   assert.equal(routes.length, 2);
 });
 
-test("Minke Host mounts Files RPC on the trusted DSH connection", async (t) => {
+test("Minke Host mounts Files on the native shared Remote API and withdraws with its plugin", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "minke-host-root-"));
   const outside = await mkdtemp(join(tmpdir(), "minke-host-outside-"));
   t.after(async () => {
@@ -1712,7 +1796,8 @@ test("Minke Host mounts Files RPC on the trusted DSH connection", async (t) => {
     writeFile(outsidePath, "outside\n", "utf8"),
   ]);
 
-  let registration;
+  const api = await workspaceApi(t);
+  let workspace;
   const pwaRoutes = [];
   const indexTaps = [];
   const context = {
@@ -1724,13 +1809,9 @@ test("Minke Host mounts Files RPC on the trusted DSH connection", async (t) => {
     effect(callback) {
       return callback();
     },
-    connection: {
-      rpc: {
-        handle(channel, handler, options) {
-          registration = { channel, handler, options };
-          return async () => {};
-        },
-      },
+    plugin(service, config) {
+      workspace = api.mount(service, config);
+      return workspace;
     },
     on() {
       return () => {};
@@ -1747,6 +1828,7 @@ test("Minke Host mounts Files RPC on the trusted DSH connection", async (t) => {
     },
   };
   applyMinkeHost(context, { rootPath: root });
+  await workspace;
   assert.equal(indexTaps.length, 1);
   assert.deepEqual(
     pwaRoutes.map(({ path }) => path),
@@ -1762,28 +1844,18 @@ test("Minke Host mounts Files RPC on the trusted DSH connection", async (t) => {
       MINKE_PWA_ROUTES.appleTouchIcon,
     ],
   );
-  assert.equal(registration.channel, MINKE_HOST_RPC_CHANNEL);
-  assert.deepEqual(registration.options, {
-    authority: "trusted-host",
-  });
-  const call = (endpoint, payload) =>
-    registration.handler(
-      endpoint,
-      payload,
-      new AbortController().signal,
-    );
+  const call = api.call;
 
   const capabilities = await call("capabilities", {});
-  assert.equal(capabilities.ok, true);
+  assert.equal(capabilities.ok, true, JSON.stringify(capabilities));
   assert.deepEqual(capabilities.value, hostCapabilities(root));
   for (const endpoint of ['terminal.create', 'terminal.write', 'terminal.resize', 'terminal.read', 'terminal.close']) {
     const retired = await call(endpoint, {});
-    assert.equal(retired.ok, false, `${endpoint} belongs to DSH, not the Minke Host`);
-    assert.equal(retired.error.code, 'bad-request');
+    assert.deepEqual(retired, { status: 404 }, `${endpoint} belongs to DSH, not the Minke Host`);
   }
 
   const listing = await call("files.list", {});
-  assert.equal(listing.ok, true);
+  assert.equal(listing.ok, true, JSON.stringify(listing));
   assert.equal(listing.value.path, await realpath(root));
   assert.equal(listing.value.parent, undefined);
   assert.deepEqual(
@@ -1794,7 +1866,7 @@ test("Minke Host mounts Files RPC on the trusted DSH connection", async (t) => {
   const preview = await call("files.preview", {
     path: notesPath,
   });
-  assert.equal(preview.ok, true);
+  assert.equal(preview.ok, true, JSON.stringify(preview));
   assert.equal(preview.value.kind, "text");
   assert.equal(preview.value.content, "before\n");
 
@@ -1803,20 +1875,38 @@ test("Minke Host mounts Files RPC on the trusted DSH connection", async (t) => {
     content: "after\n",
     expectedVersion: preview.value.version,
   });
-  assert.equal(written.ok, true);
+  assert.equal(written.ok, true, JSON.stringify(written));
+  assert.equal(await readFile(notesPath, "utf8"), "after\n");
+  const denied = await call("files.write", {
+    path: notesPath, content: "not authorized", expectedVersion: written.value.version,
+  }, undefined, api.createPeer({ kind: "minke-test-restricted" }));
+  assert.equal(denied.ok, false);
+  assert.equal(denied.error.code, "remote-access/denied");
   assert.equal(await readFile(notesPath, "utf8"), "after\n");
 
   const escaped = await call("files.preview", {
     path: outsidePath,
   });
   assert.equal(escaped.ok, false);
-  assert.equal(escaped.error.code, "bad-request");
+  assert.equal(escaped.error.code, "gateway/bad-request");
   assert.match(escaped.error.message, /outside its root/u);
 
-  const unknown = await call("files.watch", {});
-  assert.equal(unknown.ok, false);
-  assert.equal(unknown.error.code, "bad-request");
-  assert.match(unknown.error.message, /unknown Minke Host endpoint/u);
+  assert.deepEqual(await call("files.watch", {}), { status: 404 });
+  const invalid = await call("files.preview", { path: 42 });
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.error.code, "gateway/bad-request");
+  const extraArgs = await call("capabilities", { unexpected: true });
+  assert.equal(extraArgs.ok, false);
+  assert.equal(extraArgs.error.code, "gateway/arguments-invalid");
+  const cancelled = await call("files.write", {
+    path: notesPath, content: "cancelled", expectedVersion: written.value.version,
+  }, AbortSignal.abort(new Error("cancelled")));
+  assert.equal(cancelled.ok, false);
+  assert.equal(cancelled.error.code, "gateway/cancelled");
+  assert.equal(await readFile(notesPath, "utf8"), "after\n");
+  await workspace.dispose();
+  assert.deepEqual(await call("capabilities"), { status: 404 });
+
 });
 
 test("browser workspace adapters project Host Files without Electron", async () => {
@@ -1825,10 +1915,10 @@ test("browser workspace adapters project Host Files without Electron", async () 
     rpc: {
       async call(channel, endpoint, payload) {
         calls.push([channel, endpoint, payload]);
-        if (endpoint === "capabilities") {
+        if (endpoint === "minke/capabilities") {
           return { ok: true, value: hostCapabilities() };
         }
-        if (endpoint === "files.list") {
+        if (endpoint === "minke/files.list") {
           return {
             ok: true,
             value: {
@@ -1851,7 +1941,7 @@ test("browser workspace adapters project Host Files without Electron", async () 
   const storage = memoryStorage();
   const files = browserFilesPort(connection, storage);
   assert.equal(files.available, true);
-  assert.equal(files.nativeOpenAvailable, false);
+  assert.equal("open" in files, false, "native opening is owned by remote.session");
   assert.equal(files.watchAvailable, false);
   assert.deepEqual(await files.list({}), {
     path: "/host/home",
@@ -1865,8 +1955,8 @@ test("browser workspace adapters project Host Files without Electron", async () 
     truncated: false,
   });
   assert.deepEqual(
-    calls.map(([, endpoint]) => endpoint),
-    ["capabilities", "files.list"],
+    calls,
+    [[MINKE_HOST_RPC_CHANNEL, "minke/capabilities", { args: {} }], [MINKE_HOST_RPC_CHANNEL, "minke/files.list", { args: { request: {} } }]],
   );
 
   await files.writeViewState({
@@ -1897,7 +1987,7 @@ test("browser workspace adapters project Host Files without Electron", async () 
   const incompatibleFiles = browserFilesPort({
     rpc: {
       async call(_channel, endpoint) {
-        assert.equal(endpoint, "capabilities");
+        assert.equal(endpoint, "minke/capabilities");
         return {
           ok: true,
           value: {
@@ -1926,7 +2016,7 @@ test("browser Host retries a failed handshake and shares each attempt across cal
     rpc: {
       async call(_channel, endpoint) {
         calls.push(endpoint);
-        if (endpoint === "capabilities") {
+        if (endpoint === "minke/capabilities") {
           return await (++attempts === 1 ? failed.promise : recovered.promise);
         }
         return { ok: true, value: { path: "/host/home", entries: [], truncated: false } };
@@ -1948,7 +2038,7 @@ test("browser Host retries a failed handshake and shares each attempt across cal
   assert.equal(attempts, 2, "recovery must issue a fresh capability handshake");
   assert.equal((await outcomes).every(result => result.status === "fulfilled"), true);
   await files.list({});
-  assert.deepEqual(calls, ["capabilities", "capabilities", "files.list", "files.list", "files.list"]);
+  assert.deepEqual(calls, ["minke/capabilities", "minke/capabilities", "minke/files.list", "minke/files.list", "minke/files.list"]);
 });
 
 test("browser Host never replays a failed file write after a successful handshake", async () => {
@@ -1957,11 +2047,11 @@ test("browser Host never replays a failed file write after a successful handshak
     rpc: {
       async call(_channel, endpoint) {
         calls.push(endpoint);
-        if (endpoint === "capabilities") return { ok: true, value: hostCapabilities() };
+        if (endpoint === "minke/capabilities") return { ok: true, value: hostCapabilities() };
         throw new Error("connection lost after write admission");
       },
     },
   }, memoryStorage());
   await assert.rejects(files.write({ path: "/host/home/notes.txt", content: "edited", expectedVersion: `sha256:${"a".repeat(64)}` }), /connection lost/u);
-  assert.deepEqual(calls, ["capabilities", "files.write"]);
+  assert.deepEqual(calls, ["minke/capabilities", "minke/files.write"]);
 });

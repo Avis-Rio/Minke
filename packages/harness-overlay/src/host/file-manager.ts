@@ -34,7 +34,6 @@ import {
   parseFileManagerDiffResult,
   parseFileManagerListRequest,
   parseFileManagerListResult,
-  parseFileManagerOpenRequest,
   parseFileManagerPreviewRequest,
   parseFileManagerPreviewResult,
   parseFileManagerWriteRequest,
@@ -45,7 +44,6 @@ import {
   type FileManagerEntryKind,
   type FileManagerListRequest,
   type FileManagerListResult,
-  type FileManagerOpenRequest,
   type FileManagerPreviewRequest,
   type FileManagerPreviewResult,
   type FileManagerRepository,
@@ -112,7 +110,6 @@ export interface FileManagerRuntimeOptions {
   readonly readRepository?: (
     path: string,
   ) => Promise<FileManagerRepository | undefined>;
-  readonly openPath: (path: string) => Promise<string>;
 }
 
 interface FileManagerPathOperations {
@@ -521,7 +518,6 @@ export class FileManagerRuntime {
   readonly #readRepository: NonNullable<
     FileManagerRuntimeOptions["readRepository"]
   >;
-  readonly #openPath: FileManagerRuntimeOptions["openPath"];
 
   constructor(options: FileManagerRuntimeOptions) {
     this.#rootPath = normalizedAbsolutePath(options.rootPath);
@@ -540,7 +536,6 @@ export class FileManagerRuntime {
       options.readOriginal ?? readGitOriginal;
     this.#readRepository =
       options.readRepository ?? readGitRepository;
-    this.#openPath = options.openPath;
   }
 
   async list(
@@ -610,15 +605,6 @@ export class FileManagerRuntime {
         ? {}
         : { repository: boundedRepository }),
     });
-  }
-
-  async open(request: FileManagerOpenRequest): Promise<void> {
-    const parsed = parseFileManagerOpenRequest(request);
-    const path = await this.#resolvePath(parsed.path);
-    const error = await this.#openPath(path);
-    if (error !== "") {
-      throw new Error(error);
-    }
   }
 
   async diff(

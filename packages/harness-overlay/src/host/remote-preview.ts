@@ -266,7 +266,6 @@ export class RemotePreviewRuntime {
   }
 
   async publish(input: {
-    readonly cwd: string;
     readonly operationId: string;
     readonly paths: readonly string[];
   }): Promise<readonly RemotePreviewRef[]> {
@@ -274,7 +273,6 @@ export class RemotePreviewRuntime {
       throw new Error("remote preview runtime is disposed");
     }
     const id = operationId(input.operationId);
-    const cwd = absolutePath(input.cwd, "preview cwd");
     if (
       !Array.isArray(input.paths) ||
       input.paths.length > MAX_PRODUCED_PATHS
@@ -288,15 +286,11 @@ export class RemotePreviewRuntime {
           if (
             typeof value !== "string" ||
             value.length === 0 ||
-            !htmlPath(value)
+            !htmlPath(value) || !isAbsolute(value)
           ) {
             return [];
           }
-          return [
-            isAbsolute(value)
-              ? resolve(value)
-              : resolve(cwd, value),
-          ];
+          return [resolve(value)];
         }),
       ),
     ].slice(0, MAX_HTML_PREVIEWS_PER_TURN);

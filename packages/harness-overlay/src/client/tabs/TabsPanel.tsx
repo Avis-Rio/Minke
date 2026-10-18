@@ -1,4 +1,5 @@
 import { mainSessionId, type HarnessSessionList } from "../core/sessions.ts";
+import { Button } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   useEffect,
   useRef,
@@ -704,8 +705,9 @@ export function TabsPanel({
             />
           )}
           <div className="minke-tabs-tabbar__actions">
-            <button
+            <Button
               ref={setNewTabButton}
+              size="sm"
               type="button"
               className="minke-tabs-toolbar__button"
               aria-label={t("tab.new")}
@@ -720,7 +722,7 @@ export function TabsPanel({
               onClick={() => setChoosingType((open) => !open)}
             >
               <PlusIcon />
-            </button>
+            </Button>
           </div>
         </div>
 

@@ -99,37 +99,15 @@ header:has([data-minke-tabs-layout-actions])
 }
 
 [data-minke-tabs-header-action] {
-  display: inline-grid !important;
   width: 28px;
   min-width: 28px !important;
-  height: 28px;
   flex: none;
-  place-items: center;
+  justify-content: center;
   gap: 0 !important;
-  box-sizing: border-box;
   padding: 0 !important;
-  border: none;
-  border-radius: 28px;
-  appearance: none;
-  background: transparent;
   color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
   -webkit-app-region: no-drag;
   app-region: no-drag;
-}
-
-[data-minke-tabs-header-action]:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-
-[data-minke-tabs-header-action][aria-expanded="true"] {
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-}
-
-[data-minke-tabs-header-action]:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: 1px;
 }
 
 [data-minke-tabs-header-action] > svg {

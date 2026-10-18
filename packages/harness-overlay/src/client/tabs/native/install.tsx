@@ -7,7 +7,6 @@ import type { TabRendererRegistry } from "../registry.ts";
 import type { TabsRuntime } from "../runtime.ts";
 import type { NativeSidebarService, NativeTabRegistry } from "./contract.ts";
 import { LegacyNativeTabGuide, NativeTabGuide } from "./Guide.tsx";
-import { NativeTabsCreateMenu } from "./CreateMenu.tsx";
 import { minkeTabResourceProvider, type MinkeTabResources } from "./resources.ts";
 import { NativeTabsRuntime } from "./runtime.ts";
 import { NativeTabBody, NativeTabTitle } from "./views.tsx";
@@ -50,7 +49,7 @@ export function installNativeTabs(ctx: HarnessClientContext, runtime: TabsRuntim
       syncTypes();
       const releaseTypes = renderers.subscribe(syncTypes);
       const injectGuide = () => ({
-        native, registry, renderers, createShortcuts,
+        native, renderers, createShortcuts,
         currentCwd: () => {
           const sessions = ctx.sessions.list.getSnapshot();
           const sessionId = mainSessionId(sessions);
@@ -72,14 +71,9 @@ export function installNativeTabs(ctx: HarnessClientContext, runtime: TabsRuntim
         name: "sidebar.right.tab.guide.entry", key: guideId, locale: TABS_NAMESPACE,
         inject: injectGuide,
       }, NativeTabGuide as ComponentType<never>));
-      const releaseCreateMenu = ctx.slots.inject("sidebar.right.pane.add-menu", () => ctx.slots.register({
-        name: "sidebar.right.pane.add-menu", locale: TABS_NAMESPACE,
-        inject: () => ({ ...injectGuide(), sidebar }),
-      }, NativeTabsCreateMenu as ComponentType<never>));
       const releaseConnection = native.connect(sidebar);
       return () => {
         releaseConnection();
-        releaseCreateMenu();
         releaseResources();
         releaseGuide();
         releaseLauncherBody();

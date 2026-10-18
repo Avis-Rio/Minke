@@ -9,6 +9,7 @@ import * as ReactDOM from "react-dom";
 import { Context } from "@deepseek-ai/cordis";
 import * as dockkit from "../vendor/deepseek-harness/packages/client/ui-dockkit/lib/index.js";
 import * as store from "../vendor/deepseek-harness/packages/client/store/lib/index.js";
+import * as zod from "../vendor/deepseek-harness/node_modules/zod/index.js";
 import { applyHarnessRuntimePatches, resolveHarnessRuntimePatches, verifyHarnessRuntimePatchesApplied } from "../scripts/harness/runtime-patches.mjs";
 import { TabsRuntime } from "@minke/harness-overlay/client/tabs/runtime.ts";
 import { TabRendererRegistry } from "@minke/harness-overlay/client/tabs/registry.ts";
@@ -38,18 +39,20 @@ const tick = async () => { await new Promise(resolve => setTimeout(resolve, 25))
 
 async function boot(source = patched, savedStates = new Map()) {
   let plugin;
+  const dom = new JSDOM();
   const dependencies = {
     react: React, "react/jsx-runtime": jsx, "react-dom": ReactDOM,
+    zod,
     "@deepseek-ai/dsh-client-ui-dockkit": dockkit,
     "@deepseek-ai/dsh-client-store": store,
     "@deepseek-ai/dsh-client-ui-primitives": {},
   };
-  new Function("window", source)({ __ModuleLoader__: { load({ factory }) {
+  new Function("window", "document", "MutationObserver", "Element", source)({ __ModuleLoader__: { load({ factory }) {
     plugin = factory(name => {
       assert.ok(name in dependencies, `unhandled native dependency ${name}`);
       return dependencies[name];
     });
-  } } });
+  } } }, dom.window.document, dom.window.MutationObserver, dom.window.Element);
   const ctx = new Context();
   const registered = [];
   ctx.provide("slots", {
@@ -61,20 +64,22 @@ async function boot(source = patched, savedStates = new Map()) {
     },
   });
   ctx.provide("locale", { bind: () => key => key, register: () => () => {} });
-  ctx.provide("layout", { openRightbar() {}, closeRightbar() {} });
+  const panelInfo = store.createSnapshotStore({ activePanelId: null });
+  const current = store.createSnapshotStore({ key: undefined });
+  ctx.provide("layout", { openRightbar() {}, closeRightbar() {}, panelInfo });
   ctx.provide("resources", new ResourceRegistry(ctx));
-  ctx.provide("sessions", {});
-  ctx.provide("uiSession", { adapter: { current: { getSnapshot: () => ({ key: undefined }), subscribe: () => () => {} } } });
+  ctx.provide("sessions", { retain: () => ({ ready: Promise.resolve(), release() {} }) });
+  ctx.provide("uiSession", { adapter: { current } });
   ctx.provide("shortcuts", { register: () => () => {}, closeWindow: async () => {} });
   const fiber = ctx.plugin(plugin);
   await fiber.await();
   const seat = registered.find(entry => entry.name === "rightbar.session");
   assert.ok(seat);
   const instances = new Map();
-  let release;
   const mount = id => {
-    release?.();
-    if (id === undefined) { release = undefined; return; }
+    if (id === undefined) { panelInfo.set({ activePanelId: "plugins" }); return; }
+    current.set({ key: id });
+    panelInfo.set({ activePanelId: null });
     let instance = instances.get(id);
     if (!instance) {
       instance = seat.store.create(id);
@@ -82,13 +87,9 @@ async function boot(source = patched, savedStates = new Map()) {
       instances.set(id, instance);
       instance.actions.open(id);
     }
-    const bind = () => ctx.sidebarRight.bind({ sessionId: id, actions: instance.actions, surfaces: instance.getSnapshot().bySession, canSplitPane: () => true, openWithFocus: open => { open(); } });
-    let releaseBinding = bind();
-    const unsubscribe = instance.subscribe(() => { releaseBinding(); releaseBinding = bind(); });
-    release = () => { unsubscribe(); releaseBinding(); };
     return instance;
   };
-  return { ctx, instances, mount, async dispose() { release?.(); await fiber.dispose(); } };
+  return { ctx, instances, mount, async dispose() { await fiber.dispose(); dom.window.close(); } };
 }
 
 async function workspace(t, { beforeClose = () => true, source = patched, activate, inactive = false, host = { showPanel() {}, hidePanel() {} } } = {}) {
@@ -345,29 +346,24 @@ test("a failing or stale Start creator cannot redirect the next open", async t =
   assert.equal(staleCalled, false);
 });
 
-test("the add menu creates in its originating pane and rejects stale session targets", async t => {
+test("native Start placement stays in its pane when focus moves before creation", async t => {
   const w = await workspace(t);
   const first = w.runtime.open({ kind: "web", key: "first", title: "First", payload: {} });
   const firstPane = w.surface().activePaneId;
   const secondPane = w.ctx.sidebarRight.split();
   await tick();
+  w.ctx.sidebarRight.openTab("guide", { paneId: secondPane });
+  const guide = w.surface().nodes[secondPane].activeTabId;
   w.ctx.sidebarRight.focus(w.record(first).id);
   let created;
-  w.native.createInPane("session-a", secondPane, () => {
-    created = w.runtime.open({ kind: "files", key: "menu", title: "Files", payload: {} });
+  w.native.createAt(guide, () => {
+    created = w.runtime.open({ kind: "files", key: "start", title: "Files", payload: {} });
   });
   await tick();
   assert.deepEqual(w.surface().nodes[firstPane].tabs, [w.record(first).id]);
-  assert.ok(w.surface().nodes[secondPane].tabs.includes(w.record(created).id));
+  assert.deepEqual(w.surface().nodes[secondPane].tabs, [w.record(created).id]);
   assert.equal(w.surface().activePaneId, secondPane);
-  assert.throws(() => w.native.createInPane("session-a", secondPane, () => { throw new Error("creation failed"); }), /creation failed/);
-  w.ctx.sidebarRight.focus(w.record(first).id);
-  const next = w.runtime.open({ kind: "web", key: "next", title: "Next", payload: {} });
-  assert.ok(w.surface().nodes[firstPane].tabs.includes(w.record(next).id), "a failed creator must release the placement override");
-  let staleCalled = false;
-  w.native.createInPane("other-session", secondPane, () => { staleCalled = true; });
-  w.native.createInPane("session-a", "closed-pane", () => { staleCalled = true; });
-  assert.equal(staleCalled, false);
+  assert.equal(w.surface().tabs[guide], undefined, "creation replaces its originating Start tab");
 });
 
 test("native close, replacement and undo respect an unsaved draft veto", async t => {

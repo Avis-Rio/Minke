@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const { mkdtempSync, rmSync } = require('node:fs');
 const Module = require('node:module');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
@@ -18,6 +19,8 @@ const { closeServer } = require('./support/http-server.cjs');
 app.on('window-all-closed', () => {});
 
 const projectRoot = join(__dirname, '..');
+const temporaryRoot = mkdtempSync(join(tmpdir(), 'minke-web-tab-links-'));
+app.setPath('userData', temporaryRoot);
 
 function loadTabSources() {
   const bundled = buildSync({
@@ -35,14 +38,9 @@ function loadTabSources() {
     platform: 'node',
     stdin: {
       contents: `
-        export {
-          openUserGestureTabLinkExternally,
-          protectTabWebviewGuest,
-          secureTabWebview,
-        } from "./desktop/main/tabs/security.ts";
-        export {
-          bindWebTabHistory,
-        } from "./desktop/main/tabs/history.ts";
+        export { DesktopBrowserGuests } from "./desktop/main/browser-guests.ts";
+        export { PERSISTENT_BROWSER_WORKSPACE } from "./packages/harness-overlay/src/shared-browser-contract.ts";
+        export { TABS_OPEN_EXTERNAL_CHANNEL } from "./packages/harness-overlay/src/tabs/contract.ts";
         export {
           TABS_WEB_EXTERNAL_LINK_CHANNEL,
           TABS_WEB_LOCAL_PATH_CHANNEL,
@@ -180,10 +178,9 @@ async function click(guest, selector) {
 async function run() {
   await app.whenReady();
   const {
-    bindWebTabHistory,
-    openUserGestureTabLinkExternally,
-    protectTabWebviewGuest,
-    secureTabWebview,
+    DesktopBrowserGuests,
+    PERSISTENT_BROWSER_WORKSPACE,
+    TABS_OPEN_EXTERNAL_CHANNEL,
     TABS_WEB_EXTERNAL_LINK_CHANNEL,
     TABS_WEB_LOCAL_PATH_CHANNEL,
   } = loadTabSources();
@@ -204,7 +201,6 @@ async function run() {
   const guestExternalRequests = [];
   const allGuestExternalRequests = [];
   const browsingVisits = [];
-  let disposeHistory = () => {};
   const window = new BrowserWindow({
     show: false,
     webPreferences: {
@@ -213,6 +209,7 @@ async function run() {
       sandbox: true,
       webSecurity: true,
       webviewTag: true,
+      preload: join(projectRoot, ".vite", "build", "desktop-preload.js"),
     },
   });
   let attachedGuest;
@@ -223,50 +220,27 @@ async function run() {
     });
     if (event.sender !== attachedGuest) return;
     guestExternalRequests.push(candidate);
-    openUserGestureTabLinkExternally(
-      {
-        openExternal(url) {
-          externallyOpened.push(url);
-          return Promise.resolve();
-        },
-      },
-      candidate,
-    );
+
   };
   ipcMain.on(
     TABS_WEB_EXTERNAL_LINK_CHANNEL,
     handleGuestExternal,
   );
-  window.webContents.on(
-    'will-attach-webview',
-    (event, webPreferences, params) => {
-      if (!secureTabWebview(webPreferences, params, preload)) {
-        event.preventDefault();
-      }
+  const binding = new DesktopBrowserGuests({
+    harnessUrl: () => 'http://localhost:4251', preload,
+    external: { openExternal: async url => { externallyOpened.push(url); } },
+    agentBrowser: { secureWebview: () => 'unmatched', attachGuest: () => false,
+      recordHumanNavigation(sourceId, url, navigationKind) {
+        browsingVisits.push({ sourceId, url, navigationKind });
+      },
     },
-  );
+  }).bind(ipcMain, window.webContents, event => event.senderFrame === window.webContents.mainFrame);
+  const handleOpen = (event, url) => {
+    if (event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame) externallyOpened.push(url);
+  };
+  ipcMain.on(TABS_OPEN_EXTERNAL_CHANNEL, handleOpen);
   const guestPromise = waitForGuest(window);
-  window.webContents.on(
-    'did-attach-webview',
-    (_event, guest) => {
-      attachedGuest = guest;
-      disposeHistory = bindWebTabHistory(guest, {
-        recordHumanNavigation(sourceId, url, navigationKind) {
-          browsingVisits.push({
-            sourceId,
-            url,
-            navigationKind,
-          });
-        },
-      });
-      protectTabWebviewGuest(guest, {
-        openExternal(url) {
-          externallyOpened.push(url);
-          return Promise.resolve();
-        },
-      });
-    },
-  );
+  window.webContents.on('did-attach-webview', (_event, guest) => { attachedGuest = guest; });
 
   try {
     await window.loadURL(
@@ -274,23 +248,21 @@ async function run() {
         encodeURIComponent(`<!doctype html>
           <script>
             window.__guestMessages = [];
-            addEventListener('DOMContentLoaded', () => {
-              document.querySelector('webview').addEventListener(
-                'ipc-message',
-                (event) => {
-                  window.__guestMessages.push({
-                    channel: event.channel,
-                    args: event.args,
-                  });
-                },
-              );
+            addEventListener('DOMContentLoaded', async () => {
+              const browser = window.dshDesktop.browser;
+              const reservation = await browser.acquire(${JSON.stringify(PERSISTENT_BROWSER_WORKSPACE)});
+              const view = document.createElement('webview');
+              view.setAttribute('name', reservation.lease);
+              view.setAttribute('partition', reservation.partition);
+              view.setAttribute('src', 'about:blank#' + reservation.lease);
+              view.setAttribute('allowpopups', '');
+              view.style.cssText = 'display:flex;width:800px;height:600px';
+              browser.onOpenRequested(reservation.lease, url => window.minkeDesktop.tabs.openExternal(url));
+              view.addEventListener('dom-ready', () => view.loadURL(${JSON.stringify(fixture.launcherUrl)}), {once: true});
+              view.addEventListener('ipc-message', event => window.__guestMessages.push({ channel: event.channel, args: event.args }));
+              document.body.append(view);
             });
-          </script>
-          <webview
-            allowpopups
-            src="${fixture.launcherUrl}"
-            style="display:flex;width:800px;height:600px"
-          ></webview>`),
+          </script>`),
     );
     // CDP pointer injection needs a visible, laid-out guest on CI hosts.
     window.show();
@@ -438,7 +410,8 @@ async function run() {
       'Web Tab Electron link runtime passed\n',
     );
   } finally {
-    disposeHistory();
+    binding.dispose();
+    ipcMain.removeListener(TABS_OPEN_EXTERNAL_CHANNEL, handleOpen);
     ipcMain.removeListener(
       TABS_WEB_EXTERNAL_LINK_CHANNEL,
       handleGuestExternal,
@@ -463,5 +436,6 @@ run()
     process.exitCode = 1;
   })
   .finally(() => {
+    rmSync(temporaryRoot, { recursive: true, force: true });
     app.exit(process.exitCode ?? 0);
   });

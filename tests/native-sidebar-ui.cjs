@@ -8,7 +8,7 @@ const { fillsFullscreenViewport } = require('./support/sidebar-geometry.cjs');
 const { verifyWindowDrag, observeWindowDragRecall, verifyWindowDragRecall } = require('./window-drag-ui.cjs');
 
 /** Exercises the production renderer in a blank Session, before its header exists. */
-async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererValue, waitFor, workspace, openedFilePaths }) {
+async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererValue, waitFor, workspace, readOpenedFilePaths }) {
   await writeFile(join(workspace, 'sidebar-code.ts'), Array.from({ length: 180 }, (_, index) =>
     `export const value${index} = ${JSON.stringify('Native code preview '.repeat(16))};`).join('\n'));
   const pressEnter = () => {
@@ -16,9 +16,20 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
     window.webContents.sendInputEvent({ type: 'char', keyCode: 'Return' });
     window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
   };
-  const pressKey = keyCode => {
-    window.webContents.sendInputEvent({ type: 'keyDown', keyCode });
-    window.webContents.sendInputEvent({ type: 'keyUp', keyCode });
+  const pressKey = (keyCode, modifiers = []) => {
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
+  };
+  const focusWindow = async () => {
+    const { app } = require('electron');
+    if (process.platform === 'darwin') app.focus({ steal: true });
+    window.show();
+    window.focus();
+    await waitFor(() => window.isFocused(), 'native input window focus');
+  };
+  const pressShortcut = async (keyCode, modifiers = [process.platform === 'darwin' ? 'meta' : 'control']) => {
+    await focusWindow();
+    pressKey(keyCode, modifiers);
   };
   const typeKeys = text => {
     for (const keyCode of text) {
@@ -30,6 +41,9 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
     }
   };
   const click = async (selector, index = 0) => {
+    // Background input can change activeElement without dispatching the blur
+    // that saves a form. Restore native focus before delivering real clicks.
+    await focusWindow();
     const point = await waitFor(async () => {
       const candidate = await rendererValue(window, `() => {
       const button = document.querySelectorAll(${JSON.stringify(selector)})[${index}];
@@ -50,24 +64,46 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
         const hit = document.elementFromPoint(${candidate.x}, ${candidate.y});
         resolve(button?.matches(':hover') && button.contains(hit));
       }))`) ? candidate : false;
-    }, `clickable ${selector}`, 8_000);
+    }, `clickable ${selector}`, 8_000).catch(async error => {
+      const targets = await rendererValue(window, `() => [...document.querySelectorAll(${JSON.stringify(selector)})].map(button => {
+        const rect = button.getBoundingClientRect();
+        const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        return { visible: button.checkVisibility({ checkVisibilityCSS: true }), hovered: button.matches(':hover'),
+          focusedDocument: document.hasFocus(), rect: rect.toJSON(), hit: hit && { tag: hit.tagName, className: hit.className },
+          containsHit: button.contains(hit), inert: Boolean(button.closest('[inert]')) };
+      })`);
+      throw new Error(`Click target unavailable: ${JSON.stringify({ selector, index, targets })}`, { cause: error });
+    });
+    if (!window.isFocused()) await focusWindow();
     window.webContents.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
     window.webContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
   };
   const assertHeaderAlignment = async state => {
     await verifyWindowDrag({ window, rendererValue }, state);
-    await waitFor(async () => {
-      const remote = await rendererValue(window, `() => {
-      const button = document.querySelector('[data-minke-new-session-remote-hub-action] button');
-      if (!button?.checkVisibility({ checkVisibilityCSS: true })) return false;
-      const rect = button.getBoundingClientRect();
-      return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+    const hoverAppearance = selector => waitFor(async () => {
+      const point = await rendererValue(window, `() => {
+        const button = [...document.querySelectorAll(${JSON.stringify(selector)})]
+          .find(button => button.checkVisibility({ checkVisibilityCSS: true }));
+        if (!button) return false;
+        const rect = button.getBoundingClientRect();
+        return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
       }`);
-      if (!remote) return false;
-      window.webContents.sendInputEvent({ type: 'mouseMove', ...remote });
-      return rendererValue(window, `() => new Promise(resolve => requestAnimationFrame(() =>
-        resolve(document.querySelector('[data-minke-new-session-remote-hub-action] button')?.matches(':hover'))))`);
-    }, 'Remote hover');
+      if (!point) return false;
+      window.webContents.sendInputEvent({ type: 'mouseMove', ...point });
+      return rendererValue(window, `() => new Promise(resolve => requestAnimationFrame(() => {
+        const button = [...document.querySelectorAll(${JSON.stringify(selector)})]
+          .find(button => button.matches(':hover'));
+        if (!button) return resolve(false);
+        const style = getComputedStyle(button);
+        resolve({ background: style.backgroundColor, radius: style.borderRadius, width: style.width, height: style.height });
+      }))`);
+    }, state + ': hover ' + selector);
+    const nativeHover = await hoverAppearance('[data-sidebar-right-expand], [data-sidebar-right-toggle]');
+    const bottomHover = await hoverAppearance('[data-minke-new-session-tabs-action] [data-minke-tabs-placement="bottom"]');
+    const remoteHover = await hoverAppearance('[data-minke-new-session-remote-hub-action] button');
+    assert.notEqual(nativeHover.background, 'rgba(0, 0, 0, 0)', 'native header hover paints a background');
+    assert.deepEqual(bottomHover, nativeHover, state + ': bottom Terminal hover matches native DSH controls');
+    assert.deepEqual(remoteHover, nativeHover, state + ': Remote hover matches native DSH controls');
     const centers = await rendererValue(window, `() => {
       return [...document.querySelectorAll('[data-minke-remote-hub-action], [data-minke-tabs-header-action], [data-sidebar-right-mode], [data-sidebar-right-toggle], [data-sidebar-right-expand]')]
         .filter(button => button.checkVisibility({ checkVisibilityCSS: true }))
@@ -102,6 +138,84 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
   };
   await window.loadURL(harnessUrl);
   await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-right-panel]') !== null`), 'selected blank Session');
+  {
+    await pressShortcut(',');
+    await waitFor(() => rendererValue(window, `() => document.querySelector('[data-shortcut-modal="settings"]') !== null`), 'native Settings for shared controls');
+    const navSelector = '[data-shortcut-modal="settings"] nav button';
+    const minkeIndex = await rendererValue(window, `() => [...document.querySelectorAll('${navSelector}')].findIndex(button => button.textContent.trim() === 'Minke')`);
+    assert.ok(minkeIndex >= 0);
+    await click(navSelector, minkeIndex);
+    const fieldSelector = '.minke-terminal-settings__input--number input';
+    const switches = '[data-minke-preferences] [role="switch"]';
+    await waitFor(() => rendererValue(window, `() => document.querySelector('${fieldSelector}')?.disabled === false
+      && [...document.querySelectorAll('${switches}')].length === 2
+      && [...document.querySelectorAll('${switches}')].every(button => !button.disabled)`), 'shared native settings controls');
+    assert.deepEqual(await rendererValue(window, `() => [...document.querySelectorAll('[data-minke-settings] [role="tab"]')].map(tab => tab.textContent.trim())`), ['Preferences', 'Browser', 'Storage']);
+    for (const theme of ['light', 'dark']) {
+      nativeTheme.themeSource = theme;
+      await waitFor(() => rendererValue(window, `() => matchMedia('(prefers-color-scheme: dark)').matches === ${theme === 'dark'}`), 'settings ' + theme + ' theme');
+      await rendererValue(window, `() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => {
+        const panel = document.querySelector('[data-shortcut-modal="settings"]');
+        Promise.allSettled(panel.getAnimations({ subtree: true }).filter(animation => animation.effect.getTiming().iterations !== Infinity)
+          .map(animation => animation.finished)).then(() => resolve(true));
+      })))`);
+      const controls = await rendererValue(window, `() => ({
+        switches: [...document.querySelectorAll('${switches}')].map(button => {
+          const rect = button.getBoundingClientRect();
+          return { width: rect.width, height: rect.height, children: button.children.length };
+        }),
+        inputHeight: getComputedStyle(document.querySelector('${fieldSelector}').parentElement).height,
+        inputFont: getComputedStyle(document.querySelector('${fieldSelector}')).fontSize,
+      })`);
+      assert.deepEqual(controls.switches, [{ width: 36, height: 20, children: 1 }, { width: 36, height: 20, children: 1 }]);
+      assert.equal(controls.inputHeight, '32px');
+      assert.equal(controls.inputFont, '14px');
+      if (process.env.MINKE_SIDEBAR_SCREENSHOT) await writeFile(`${process.env.MINKE_SIDEBAR_SCREENSHOT}.settings-${theme}.png`, (await window.webContents.capturePage()).toPNG());
+      await rendererValue(window, `() => {
+        document.querySelector('[data-preferences-category="application"]').scrollIntoView({ block: 'end', behavior: 'instant' });
+        return true;
+      }`);
+      if (process.env.MINKE_SIDEBAR_SCREENSHOT) await writeFile(`${process.env.MINKE_SIDEBAR_SCREENSHOT}.settings-controls-${theme}.png`, (await window.webContents.capturePage()).toPNG());
+      await rendererValue(window, `() => { document.querySelector('[data-minke-settings]').scrollIntoView({ block: 'start', behavior: 'instant' }); return true; }`);
+    }
+    const oldChecked = await rendererValue(window, `() => document.querySelector('${switches}').getAttribute('aria-checked')`);
+    await click(switches);
+    await waitFor(() => rendererValue(window, `() => document.querySelector('${switches}').getAttribute('aria-checked') !== ${JSON.stringify(oldChecked)}
+      && !document.querySelector('${switches}').disabled`), 'native Switch delegates and settles');
+    await click(switches);
+    await waitFor(() => rendererValue(window, `() => document.querySelector('${switches}').getAttribute('aria-checked') === ${JSON.stringify(oldChecked)}
+      && !document.querySelector('${switches}').disabled`), 'native Switch restores its setting');
+    await click(fieldSelector);
+    const originalLineHeight = await rendererValue(window, `() => document.querySelector('${fieldSelector}').value`);
+    // This isolated window has no application Edit menu; invoke its native command.
+    window.webContents.selectAll();
+    pressKey('Backspace');
+    typeKeys('1.35');
+    const editedField = await rendererValue(window, `() => {
+      const input = document.querySelector('${fieldSelector}');
+      return { value: input.value, focused: document.activeElement === input, invalid: input.getAttribute('aria-invalid') };
+    }`);
+    assert.deepEqual(editedField, { value: '1.35', focused: true, invalid: 'false' }, 'native number Input receives keyboard editing');
+    pressKey('Tab');
+    await waitFor(() => rendererValue(window, `() => document.querySelector('${fieldSelector}').value === '1.35'
+      && !document.querySelector('${fieldSelector}').disabled`), 'native Input saves on blur');
+    await click('[data-minke-settings] [role="tab"]', 1);
+    pressKey('Home');
+    await waitFor(() => rendererValue(window, `() => document.activeElement?.getAttribute('role') === 'tab'
+      && document.activeElement.textContent.trim() === 'Preferences'
+      && document.activeElement.getAttribute('aria-selected') === 'true'`), 'native tab keyboard focus');
+    assert.equal(await rendererValue(window, `() => document.querySelector('${fieldSelector}').value`), '1.35', 'native tab navigation retains settings');
+    await click(fieldSelector);
+    window.webContents.selectAll();
+    await window.webContents.insertText(originalLineHeight);
+    pressKey('Tab');
+    await waitFor(() => rendererValue(window, `() => document.querySelector('${fieldSelector}').value === ${JSON.stringify(originalLineHeight)}
+      && !document.querySelector('${fieldSelector}').disabled`), 'restore initial line spacing');
+    pressKey('Escape');
+    await waitFor(() => rendererValue(window, `() => document.querySelector('[data-shortcut-modal="settings"]') === null`), 'Settings dismisses after native control interactions');
+    nativeTheme.themeSource = 'light';
+    process.stdout.write('[sidebar-ui] shared native settings styles, switch/input changes and keyboard tabs passed\n');
+  }
   await verifyWindowDrag({ window, rendererValue }, 'blank Session');
   await observeWindowDragRecall({ window, rendererValue });
   if (process.platform === 'darwin') {
@@ -132,6 +246,12 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
     if (process.env.MINKE_SIDEBAR_SCREENSHOT) await writeFile(`${process.env.MINKE_SIDEBAR_SCREENSHOT}.left-toggle.png`, (await window.webContents.capturePage({ x: 0, y: 0, width: 90, height: 340 })).toPNG());
     await click('[data-dsh-desktop-sidebar-toggle]');
     await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-collapsed]') === null`), 'native left Sidebar expands on click');
+    await waitFor(() => rendererValue(window, `() => document.querySelector('[data-slot="sidebar.brand.name"]') !== null`), 'expanded Sidebar brand slots');
+    assert.deepEqual(await rendererValue(window, `() => ({
+      name: document.querySelector('[data-slot="sidebar.brand.name"]').textContent,
+      marks: document.querySelectorAll('[data-slot="sidebar.brand.mark"] svg').length,
+    })`), { name: '', marks: 0 }, 'desktop Sidebar omits the logo and build description');
+    if (process.env.MINKE_SIDEBAR_SCREENSHOT) await writeFile(`${process.env.MINKE_SIDEBAR_SCREENSHOT}.left-sidebar.png`, (await window.webContents.capturePage()).toPNG());
     if (initiallyCollapsed) {
       await click('[data-dsh-desktop-sidebar-toggle]');
       await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-collapsed]') !== null`), 'restored left Sidebar state');
@@ -218,16 +338,68 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
       `${state}: Start cards must fit the pane without horizontal scrolling: ${JSON.stringify(bounds)}`);
   };
   await assertGuideLayout('initial Sidebar');
+  const scrollGuideWithWheel = async state => {
+    await focusWindow();
+    const input = await rendererValue(window, `() => {
+      const guide = document.querySelector('[data-sidebar-right-guide]');
+      let viewport = guide.parentElement;
+      while (getComputedStyle(viewport).display === 'contents') viewport = viewport.parentElement;
+      viewport.scrollTop = 0;
+      const rect = viewport.getBoundingClientRect();
+      return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), deltaY: -viewport.scrollHeight };
+    }`);
+    // Let Chromium commit the reset before the compositor handles native input.
+    await rendererValue(window, '() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+    const start = await rendererValue(window, `() => {
+      const guide = document.querySelector('[data-sidebar-right-guide]');
+      let viewport = guide.parentElement;
+      while (getComputedStyle(viewport).display === 'contents') viewport = viewport.parentElement;
+      return { firstTop: guide.firstElementChild.getBoundingClientRect().top, viewportTop: viewport.getBoundingClientRect().top };
+    }`);
+    assert.ok(start.firstTop >= start.viewportTop,
+      state + ': the beginning of Start must remain reachable: ' + JSON.stringify(start));
+    window.webContents.sendInputEvent({ type: 'mouseMove', x: input.x, y: input.y });
+    await waitFor(async () => {
+      const atEnd = await rendererValue(window, `() => {
+        const guide = document.querySelector('[data-sidebar-right-guide]');
+        let viewport = guide.parentElement;
+        while (getComputedStyle(viewport).display === 'contents') viewport = viewport.parentElement;
+        const last = [...guide.querySelectorAll('[data-option]')].at(-1);
+        return viewport.scrollTop > 0 && viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 1 &&
+          last.getBoundingClientRect().bottom <= viewport.getBoundingClientRect().bottom + 1;
+      }`);
+      // Native wheel input can advance at most one viewport per event.
+      if (!atEnd) window.webContents.sendInputEvent({ type: 'mouseWheel', ...input, canScroll: true });
+      return atEnd;
+    }, state + ': wheel scroll reaches the final Start card', 3_000).catch(async error => {
+      const geometry = await rendererValue(window, `() => {
+        const guide = document.querySelector('[data-sidebar-right-guide]');
+        let viewport = guide.parentElement;
+        while (getComputedStyle(viewport).display === 'contents') viewport = viewport.parentElement;
+        const last = [...guide.querySelectorAll('[data-option]')].at(-1);
+        const bottom = document.querySelector('.minke-tabs-panel[data-placement="bottom"][data-open]');
+        const hit = document.elementFromPoint(${input.x}, ${input.y});
+        return { viewport: viewport.getBoundingClientRect().toJSON(), guide: guide.getBoundingClientRect().toJSON(),
+          last: last.getBoundingClientRect().toJSON(), bottom: bottom?.getBoundingClientRect().toJSON(),
+          scrollTop: viewport.scrollTop, scrollHeight: viewport.scrollHeight, input: ${JSON.stringify(input)},
+          hit: hit?.outerHTML.slice(0, 400), height: innerHeight };
+      }`);
+      if (process.env.MINKE_SIDEBAR_SCREENSHOT) await writeFile(`${process.env.MINKE_SIDEBAR_SCREENSHOT}.scroll-failed.png`, (await window.webContents.capturePage()).toPNG());
+      throw new Error(error.message + '; geometry=' + JSON.stringify(geometry));
+    });
+    const end = await rendererValue(window, `() => {
+      const last = [...document.querySelectorAll('[data-sidebar-right-guide] [data-option]')].at(-1);
+      const rect = last.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.bottom - 2);
+      return { clear: last.contains(hit), hit: hit?.getAttribute('data-minke-tabs-resize-handle') ?? hit?.className };
+    }`);
+    assert.ok(end.clear, state + ': the final card must be clear of the terminal resize handle: ' + JSON.stringify(end));
+  };
   await click('[data-minke-new-session-tabs-action] [data-minke-tabs-placement="bottom"]');
   await waitFor(() => rendererValue(window, `() => document.querySelector('.minke-tabs-panel[data-placement="bottom"][data-open]') !== null`), 'bottom panel beside Start');
   const assertBottomLayout = async state => {
     await rendererValue(window, '() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
-    await rendererValue(window, `() => {
-      let viewport = document.querySelector('[data-sidebar-right-guide]').parentElement;
-      while (getComputedStyle(viewport).display === 'contents') viewport = viewport.parentElement;
-      viewport.scrollTop = viewport.scrollHeight;
-      return true;
-    }`);
+    await scrollGuideWithWheel(state);
     await rendererValue(window, '() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
     const bounds = await rendererValue(window, `() => {
       const guide = document.querySelector('[data-sidebar-right-guide]');
@@ -292,22 +464,19 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
     window.setContentSize(1280, 420);
     await waitFor(() => rendererValue(window, '() => innerHeight === 420'), 'short Start viewport');
     await assertGuideLayout('short Sidebar');
-    const scroll = await rendererValue(window, `() => {
-      const guide = document.querySelector('[data-sidebar-right-guide]');
-      let viewport = guide.parentElement;
-      while (getComputedStyle(viewport).display === 'contents') viewport = viewport.parentElement;
-      viewport.scrollTop = viewport.scrollHeight;
-      const last = [...guide.querySelectorAll('[data-option]')].at(-1);
-      const result = { top: viewport.scrollTop, lastBottom: last.getBoundingClientRect().bottom, viewportBottom: viewport.getBoundingClientRect().bottom };
-      viewport.scrollTop = 0;
-      return result;
-    }`);
-    assert.ok(scroll.top > 0 && scroll.lastBottom <= scroll.viewportBottom + 1, 'short Start pages scroll to the final card within CSS scroll rounding: ' + JSON.stringify(scroll));
+    await scrollGuideWithWheel('short Sidebar');
+    await click('[data-minke-new-session-tabs-action] [data-minke-tabs-placement="bottom"]');
+    await waitFor(() => rendererValue(window, `() => document.querySelector('.minke-tabs-panel[data-placement="bottom"][data-open]') !== null`), 'bottom panel in short window');
+    await assertBottomLayout('short Sidebar with bottom open');
+    await click('[data-minke-new-session-tabs-action] [data-minke-tabs-placement="bottom"]');
+    await waitFor(() => rendererValue(window, `() => document.querySelector('.minke-tabs-panel[data-placement="bottom"][data-open]') === null`), 'bottom panel closed in short window');
   } finally {
     window.setContentSize(restoredWidth, restoredHeight);
     await waitFor(() => rendererValue(window, `() => innerWidth === ${restoredWidth} && innerHeight === ${restoredHeight}`), `restored Start viewport ${restoredWidth}x${restoredHeight}`);
     await rendererValue(window, `() => { document.querySelector('[data-sidebar-right-panel]').style.width = ${JSON.stringify(panelWidth)}; return true; }`);
   }
+
+  process.stdout.write('[sidebar-ui] Start wheel scrolling above bottom terminals and in short windows passed\n');
 
   // Source input at the failing seam is now green; also exercise the same
   // global actions at compact widths and while DSH owns fullscreen.
@@ -376,56 +545,31 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
     }`), `visible ${kind} content`);
     assert.equal(await rendererValue(window, `() => document.querySelectorAll('[data-sidebar-right-panel] [data-dockkit-tab]').length`), count, 'creation replaces Start with the requested tab');
   };
-  const openAddMenu = async (selector = '[data-dockkit-add-tab]', keyboard = false) => {
+  const add = async (selector = '[data-dockkit-add-tab]', keyboard = false) => {
     const before = await rendererValue(window, `() => [...document.querySelectorAll('[data-sidebar-right-panel] [data-dockkit-tab]')].map(tab => tab.dataset.dockkitTab)`);
+    const paneId = await rendererValue(window, `() => document.querySelector(${JSON.stringify(selector)}).dataset.dockkitAddTab`);
     if (keyboard) {
       await rendererValue(window, `() => { document.querySelector(${JSON.stringify(selector)}).focus(); return true; }`);
       pressEnter();
     } else await click(selector);
-    await waitFor(() => rendererValue(window, `() => document.querySelector('[data-minke-tabs-create-menu]') !== null`), 'grouped add-tab menu');
-    await verifyWindowDrag({ window, rendererValue }, 'add menu open');
-    const menu = await rendererValue(window, `() => ({
-      tabs: [...document.querySelectorAll('[data-sidebar-right-panel] [data-dockkit-tab]')].map(tab => tab.dataset.dockkitTab),
-      groups: [...document.querySelectorAll('[data-minke-tabs-create-menu] [role="group"]')].map(group => group.getAttribute('aria-label')),
-      options: [...document.querySelectorAll('[data-minke-tabs-create-menu] [data-option]')].map(item => item.dataset.option),
-      expanded: document.querySelector(${JSON.stringify(selector)}).getAttribute('aria-expanded'),
-    })`);
-    assert.deepEqual(menu.tabs, before, 'opening the menu must not create or replace tabs');
-    assert.deepEqual(menu.groups, ['DSH', 'Minke']);
-    assert.ok(menu.options.some(id => id.startsWith('dsh:files:')), 'native file manager stays available');
-    assert.equal(menu.options.filter(id => id.startsWith('dsh:terminal:') || id === 'terminal').length, 1, 'one provider-owned Terminal entry');
-    assert.ok(menu.options.includes('browser') && menu.options.includes('dsh:guide'));
-    assert.equal(menu.expanded, 'true');
-    return before;
-  };
-  const add = async () => {
-    const before = await openAddMenu();
-    await click('[data-minke-tabs-create-menu] [data-option="dsh:guide"]');
-    await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-right-guide] [data-option="files"]') !== null`), 'native Start page', 5_000);
+    await waitFor(() => rendererValue(window, `() => document.querySelector('[data-dockkit-pane="${paneId}"] [data-sidebar-right-guide] [data-option="files"]') !== null`), 'native add action opens Start in its pane');
     const after = await rendererValue(window, `() => [...document.querySelectorAll('[data-sidebar-right-panel] [data-dockkit-tab]')].map(tab => tab.dataset.dockkitTab)`);
-    assert.equal(after.length, before.length + 1, 'choosing Start opens one tab');
+    assert.equal(after.length, before.length + 1, 'native add opens exactly one Start tab');
     assert.ok(before.every(id => after.includes(id)), 'opening Start preserves existing tabs');
-    assert.equal(await rendererValue(window, `() => document.querySelector('[data-minke-tabs-create-menu]') === null`), true, 'selection dismisses the menu');
+    const guide = await rendererValue(window, `() => {
+      const pane = document.querySelector('[data-dockkit-pane="${paneId}"]');
+      return {
+        nativeFiles: !!pane.querySelector('[data-sidebar-right-guide-entry="files"]'),
+        terminals: pane.querySelectorAll('[data-sidebar-right-guide-entry="terminal"]').length,
+        minkeOptions: [...pane.querySelectorAll('[data-sidebar-right-guide] [data-option]')].map(button => button.dataset.option),
+        canAddAgain: !!pane.querySelector('[data-dockkit-add-tab]:not([disabled])'),
+        privateMenu: !!document.querySelector('[data-minke-tabs-create-menu]'),
+      };
+    }`);
+    assert.deepEqual(guide, { nativeFiles: true, terminals: 1,
+      minkeOptions: ['files', 'browser', 'browser-history', 'plugins'], canAddAgain: false, privateMenu: false });
+    await verifyWindowDrag({ window, rendererValue }, 'native Start open');
   };
-
-  const beforeCancel = await openAddMenu();
-  if (process.env.MINKE_SIDEBAR_SCREENSHOT) {
-    await rendererValue(window, '() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
-    await writeFile(`${process.env.MINKE_SIDEBAR_SCREENSHOT}.add-menu.png`, (await window.webContents.capturePage()).toPNG());
-  }
-  pressKey('Escape');
-  await waitFor(() => rendererValue(window, `() => !document.querySelector('[data-minke-tabs-create-menu]') && document.activeElement?.matches('[data-dockkit-add-tab]')`), 'Escape returns focus to add button');
-  assert.deepEqual(await rendererValue(window, `() => [...document.querySelectorAll('[data-sidebar-right-panel] [data-dockkit-tab]')].map(tab => tab.dataset.dockkitTab)`), beforeCancel);
-  await openAddMenu('[data-dockkit-add-tab]', true);
-  await waitFor(() => rendererValue(window, `() => document.activeElement?.matches('[data-minke-tabs-create-menu] [role="menuitem"]')`), 'keyboard menu focus');
-  pressKey('End');
-  await waitFor(() => rendererValue(window, `() => document.activeElement === [...document.querySelectorAll('[data-minke-tabs-create-menu] [role="menuitem"]')].at(-1)`), 'keyboard navigation to last menu item');
-  // The open menu can cover guide actions on compact displays. Exercise an
-  // outside click in the conversation, where its intended target stays exposed.
-  await click('[data-composer-input][contenteditable="true"]');
-  await waitFor(() => rendererValue(window, `() => !document.querySelector('[data-minke-tabs-create-menu]')`), 'outside click dismisses add menu');
-  assert.equal(await rendererValue(window, `() => document.activeElement?.matches('[data-composer-input][contenteditable="true"]')`), true, 'the outside click reaches the composer');
-  process.stdout.write('[sidebar-ui] grouped add menu, cancellation, and keyboard navigation passed\n');
 
   // Exercise the provider-owned guide, two independent native shells, and cleanup
   // before creating Minke content. This catches accidental replacement of the guide.
@@ -457,6 +601,8 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
       }))`);
       throw new Error(JSON.stringify({ file, expected: value, actual, terminals }), { cause: error });
     }
+    assert.equal(await rendererValue(window, `() => document.querySelector('[data-composer-input]')?.textContent`), '',
+      'Terminal input must not change the parent draft: ' + file);
     return rendererValue(window, `() => document.querySelector('[data-sidebar-right-panel] [data-sidebar-terminal]').closest('[data-dockkit-pane]').querySelector('[data-dockkit-tab][aria-selected="true"]').dataset.dockkitTab`);
   };
   nativeTerminalIds.push(await runNativeShell('dsh-terminal-one.txt', 'first'));
@@ -493,16 +639,16 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
   };
   await assertNativeSplit('after splitting');
   const filesPaneId = await rendererValue(window, `() => document.querySelector('[data-files-state="tree"]').closest('[data-dockkit-pane]').dataset.dockkitPane`);
-  await openAddMenu(`[data-dockkit-add-tab="${filesPaneId}"]`);
-  await click('[data-minke-tabs-create-menu] [data-option="browser"]');
+  await add(`[data-dockkit-add-tab="${filesPaneId}"]`);
+  await click('[data-sidebar-right-guide] [data-option="browser"]');
   const splitBrowserTabId = await waitFor(() => rendererValue(window, `() => {
     const pane = document.querySelector('[data-dockkit-pane="${filesPaneId}"]');
     const tab = pane.querySelector('[data-dockkit-tab][aria-selected="true"]:has([data-minke-tab-title])');
     return tab?.dataset.dockkitTab;
-  }`), 'menu creates browser in the clicked split pane');
+  }`), 'Start creates browser in the clicked split pane');
   await click(`[data-dockkit-tab="${splitBrowserTabId}"] [data-dockkit-tab-close]`);
   await waitFor(() => rendererValue(window, `() => document.querySelector('[data-files-state="tree"]')?.checkVisibility({ checkVisibilityCSS: true })`), 'split files restored after closing browser');
-  await assertNativeSplit('after creating from the split menu');
+  await assertNativeSplit('after creating from the split Start page');
   await runNativeShell('dsh-terminal-one.txt', 'split');
   await waitFor(() => rendererValue(window, `() => document.querySelector('[data-files-path$="/dsh-terminal-one.txt"]') !== null`), 'native file browser sees the terminal output');
   if (process.env.MINKE_SIDEBAR_SCREENSHOT) await writeFile(`${process.env.MINKE_SIDEBAR_SCREENSHOT}.native-split.png`, (await window.webContents.capturePage()).toPNG());
@@ -515,8 +661,8 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
   await click('[data-sidebar-right-mode="push"]');
   await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-right-panel="push"]') !== null`), 'native split returns to docked mode');
   process.stdout.write('[sidebar-ui] native split, simultaneous Terminal and Workspace files, and layout restoration passed\n');
-  await openAddMenu('[data-dockkit-add-tab]', true);
-  await rendererValue(window, `() => { document.querySelector('[data-minke-tabs-create-menu] [data-option^="dsh:terminal:"]').focus(); return true; }`);
+  await add('[data-dockkit-add-tab]', true);
+  await rendererValue(window, `() => { document.querySelector('[data-sidebar-right-guide-entry="terminal"] button').focus(); return true; }`);
   pressEnter();
   nativeTerminalIds.push(await runNativeShell('dsh-terminal-two.txt', 'second'));
   assert.notEqual(nativeTerminalIds[0], nativeTerminalIds[1], 'native terminal instances have separate tabs');
@@ -663,7 +809,7 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
   process.stdout.write('[sidebar-ui] native code banner, scrollport and saved position passed\n');
 
   await checkShellState();
-  const checkBottomAfterReload = await require('./shared-terminal-ui.cjs').verifySharedTerminalUI({ window, rendererValue, waitFor, workspace, click, pressKey, pressEnter, typeKeys });
+  const checkBottomAfterReload = await require('./shared-terminal-ui.cjs').verifySharedTerminalUI({ window, rendererValue, waitFor, workspace, click, pressKey, pressShortcut, pressEnter, typeKeys });
   assert.deepEqual(await layout(), [], 'global actions remain separate with both panels open');
   await click('[data-minke-new-session-tabs-action] [data-minke-tabs-placement="bottom"]');
   await waitFor(() => rendererValue(window, `() => document.querySelector('.minke-tabs-panel[data-placement="bottom"][data-open]') === null`), 'bottom panel collapse');
@@ -687,8 +833,21 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
   await checkBottomAfterReload();
   assert.equal(await rendererValue(window, `() => document.querySelector('.minke-tabs-native-host[data-kind="terminal"]') === null`), true, 'sidebar contains only native terminals');
   process.stdout.write('[sidebar-ui] refresh restores custom content and the original native shell\n');
-  await require('./files-preview-ui.cjs').verifyFilesPreviewUI({ window, rendererValue, waitFor, workspace, click, pressKey, openedFilePaths });
+  await require('./files-preview-ui.cjs').verifyFilesPreviewUI({ window, rendererValue, waitFor, workspace, click, pressKey, readOpenedFilePaths });
   await add();
+  // Standard Browser starts at an approved blank lease document. Redirect this
+  // fixture only after its first renderer dom-ready has finished bootstrapping.
+  await rendererValue(window, `() => {
+    window.__discoveryReadyGuest = undefined;
+    const observer = new MutationObserver(() => {
+      const guest = document.querySelector('.minke-plugins-page webview');
+      if (!guest) return;
+      observer.disconnect();
+      guest.addEventListener('dom-ready', () => { window.__discoveryReadyGuest = guest; }, { once: true });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return true;
+  }`);
   await click('[data-sidebar-right-guide] [data-option="plugins"]');
   await waitFor(() => rendererValue(window, `() => document.querySelector('.minke-plugins-page [role="search"]') !== null`), 'plugin discovery search');
   assert.deepEqual(await rendererValue(window, `() => [...document.querySelectorAll('.minke-plugins-page button')]
@@ -696,6 +855,7 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
     .map(button => button.textContent)`), [], 'discovery must not duplicate management or recovery controls');
   const discoveryId = await waitFor(() => rendererValue(window, `() => {
     const host = document.querySelector('.minke-tabs-native-host[data-kind="plugin-catalog"]');
+    if (host?.querySelector('webview') !== window.__discoveryReadyGuest) return false;
     try { return host?.querySelector('webview')?.getWebContentsId() ? host.dataset.minkeTabInstance : false; }
     catch { return false; }
   }`), 'discovery shared browser guest');
@@ -707,16 +867,48 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
       const rect = view.getBoundingClientRect();
       try { return rect.width > 100 && rect.height > 100 && view.getURL() === ${JSON.stringify(fixtureUrl)} && view.getWebContentsId(); }
       catch { return false; }
-    }`), 'visible discovery fixture');
-    await waitFor(() => webContents.fromId(id)?.executeJavaScript(`document.querySelector('#state')?.textContent === 'Ready'`), 'discovery fixture content');
+    }`), 'visible discovery fixture').catch(async error => {
+      const state = await rendererValue(window, `() => {
+        const page = document.querySelector('.minke-plugins-page');
+        const view = page?.querySelector('webview');
+        let guest; try { guest = { url: view?.getURL(), id: view?.getWebContentsId() }; } catch (error) { guest = String(error); }
+        return { guest, src: view?.getAttribute('src'), visible: view?.checkVisibility({ checkVisibilityCSS: true }),
+          address: page?.querySelector('.minke-plugins-browser__identity small')?.textContent,
+          error: page?.querySelector('[role="alert"]')?.textContent };
+      }`);
+      throw new Error(error.message + '; discovery=' + JSON.stringify(state));
+    });
+    await waitFor(() => webContents.fromId(id)?.executeJavaScript(`document.querySelector('#state')?.textContent === 'Ready'`), 'discovery fixture content')
+      .catch(async error => {
+        const state = await webContents.fromId(id)?.executeJavaScript(`({ url: location.href, ready: document.readyState, title: document.title, state: document.querySelector('#state')?.textContent })`);
+        throw new Error(error.message + '; guest=' + JSON.stringify(state));
+      });
     assert.equal(await rendererValue(window, `() => document.querySelectorAll('.minke-plugins-page webview').length`), 1, 'discovery owns one shared guest');
     return id;
   };
   const discoveryGuestId = await checkDiscoveryGuest();
   await webContents.fromId(discoveryGuestId).executeJavaScript(`document.querySelector('#human-note').value = 'Retained across Plugins and Settings'`);
-  await click('button[aria-label="Plugins"]');
+  const openPlugins = async () => {
+    const navigationAvailable = () => rendererValue(window, `() => {
+      const button = document.querySelector('button[aria-label="Plugins"]');
+      if (!button) return false;
+      const rect = button.getBoundingClientRect();
+      return button.checkVisibility({ checkVisibilityCSS: true }) &&
+        button.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+    }`);
+    if (!await navigationAvailable()) {
+      await pressShortcut('s');
+      await waitFor(navigationAvailable, 'expanded sidebar navigation');
+    }
+    await click('button[aria-label="Plugins"]');
+  };
+  await openPlugins();
   await waitFor(() => rendererValue(window, `() => document.querySelector('[data-plugin-panel][aria-busy="false"] [data-plugin-package]') !== null`), 'native DSH Plugins page');
-  await click('[data-plugin-panel] header button:last-child');
+  const installButtons = '[data-plugin-panel] header button';
+  const installButtonIndex = await rendererValue(window, `() => [...document.querySelectorAll(${JSON.stringify(installButtons)})]
+    .findIndex(button => button.textContent.trim() === 'Add plugin')`);
+  assert.ok(installButtonIndex >= 0, 'native Plugins page exposes Add plugin');
+  await click(installButtons, installButtonIndex);
   await waitFor(() => rendererValue(window, `() => document.querySelector('[role="dialog"] input[aria-label="Package name or address"]') !== null`), 'DSH Add plugin dialog');
   await click('[role="dialog"] button[aria-label="Close"]');
   await waitFor(() => rendererValue(window, `() => document.querySelector('[role="dialog"]') === null`), 'native plugin dialog dismissed');
@@ -736,8 +928,8 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
   process.stdout.write('[sidebar-ui] native plugin installation entry and single desktop recovery entry passed\n');
   for (const entry of ['header', 'shortcut']) {
     if (entry === 'shortcut') {
-      await click('button[aria-label="Plugins"]');
-      await click('button[aria-label="Settings"]');
+      await openPlugins();
+      await pressShortcut(',');
       await waitFor(() => rendererValue(window, `() => document.querySelector('[data-shortcut-modal="settings"]') !== null`), 'native Settings dialog');
       pressKey('Escape');
       await waitFor(() => rendererValue(window, `() => document.querySelector('[data-shortcut-modal="settings"]') === null`), 'Settings returns to Plugins');
@@ -750,10 +942,21 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
     if (entry === 'header') await click(opener);
     else {
       const modifiers = [process.platform === 'darwin' ? 'meta' : 'control'];
-      window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'p', modifiers });
-      window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'p', modifiers });
-      assert.equal(await checkDiscoveryGuest(), discoveryGuestId, 'Sidebar shortcut restores the selected native tab');
-      await add();
+      await pressShortcut('p', modifiers);
+      await rendererValue(window, `() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+      assert.equal(await rendererValue(window, `() => document.querySelector('[data-plugin-panel]') !== null`), true,
+        'DSH scopes the Sidebar shortcut to a mounted Session');
+      await click(opener);
+      const startId = await waitFor(() => rendererValue(window, `() =>
+        document.querySelector('[data-sidebar-right-guide]')?.closest('[data-dockkit-pane]')
+          ?.querySelector('[data-dockkit-tab][aria-selected="true"]')?.dataset.dockkitTab`), 'Start tab opened from Plugins');
+      await click(`[data-minke-tab-title="${discoveryId}"]`);
+      assert.equal(await checkDiscoveryGuest(), discoveryGuestId, 'returning to the Session retains the browser instance');
+      await pressShortcut('p', modifiers);
+      await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-right-panel][data-sidebar-right-open]') === null`), 'shared Sidebar shortcut collapses the Session panel');
+      await pressShortcut('p', modifiers);
+      assert.equal(await checkDiscoveryGuest(), discoveryGuestId, 'shared Sidebar shortcut restores the selected native tab');
+      await click(`[data-dockkit-tab="${startId}"]`);
     }
     await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-right-guide-entry="terminal"]')?.checkVisibility({ checkVisibilityCSS: true }) && document.querySelector('[data-sidebar-right-guide-entry="files"]')?.checkVisibility({ checkVisibilityCSS: true })`), entry + ' opens the native Start entries');
     await click('[data-sidebar-right-guide-entry="terminal"] button');
@@ -771,6 +974,7 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
   await click(`[data-minke-tab-title="${discoveryId}"]`);
   await checkDiscoveryGuest();
   process.stdout.write('[sidebar-ui] shared discovery browser content and URL restoration passed\n');
+
 }
 
 module.exports = { verifyNativeSidebarUI };

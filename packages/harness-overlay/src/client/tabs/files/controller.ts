@@ -1,5 +1,6 @@
 import { filesDocumentKind } from "./document-kind.ts";
 import { restoreFilesPayload } from "./persistence.ts";
+import { unavailableWorkspacePaths, type WorkspacePathActions } from "../../host/path-actions.ts";
 import type { ManagedTab } from "../types.ts";
 import type {
   DesktopFilesPort,
@@ -78,6 +79,7 @@ function directlyContains(directory: string, path: string): boolean {
 
 /** Files-specific navigation layered over the content-agnostic Tabs core. */
 export class FilesTabsController {
+  readonly pathActions: WorkspacePathActions;
   readonly #tabs: TabsRuntime;
   readonly #desktop: DesktopFilesPort;
   readonly #history = new Map<string, HistoryState>();
@@ -107,10 +109,12 @@ export class FilesTabsController {
     desktop: DesktopFilesPort,
     options: {
       readonly placement?: FileManagerPanelPlacement;
+      readonly pathActions?: WorkspacePathActions;
     } = {},
   ) {
     this.#tabs = tabs;
     this.#desktop = desktop;
+    this.pathActions = options.pathActions ?? unavailableWorkspacePaths;
     this.#placement = options.placement ?? "right";
     this.#unsubscribeTabs = tabs.subscribe(() => {
       this.#releaseClosedTabs();
@@ -120,7 +124,7 @@ export class FilesTabsController {
   }
 
   get nativeOpenAvailable(): boolean {
-    return this.#desktop.nativeOpenAvailable !== false;
+    return this.pathActions.getSnapshot();
   }
 
   create(path: string | undefined, title: string): string | undefined {
@@ -718,7 +722,8 @@ export class FilesTabsController {
     if (this.#disposed || !this.nativeOpenAvailable) {
       return;
     }
-    void this.#desktop.open({ path }).catch((error: unknown) => {
+    void this.pathActions.open(path).catch((error: unknown) => {
+      if (this.#disposed) return;
       const tab = this.#tabs.tab(tabId);
       if (tab === undefined || !isFilesTab(tab)) return;
       this.#tabs.update<FilesTabPayload>(tabId, {

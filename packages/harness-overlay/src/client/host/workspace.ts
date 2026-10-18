@@ -1,5 +1,6 @@
 import {
   MINKE_HOST_RPC_CHANNEL,
+  minkeHostEndpoint,
   parseMinkeHostCapabilities,
   type MinkeHostRpcEndpoint,
   type MinkeHostRpcRequest,
@@ -100,7 +101,7 @@ function createHostCaller(connection: Connection): HostCaller {
     | undefined;
   const ensureReady = () => {
     ready ??= connection.rpc
-      .call(MINKE_HOST_RPC_CHANNEL, "capabilities", {})
+      .call(MINKE_HOST_RPC_CHANNEL, minkeHostEndpoint("capabilities"), { args: {} })
       .then((result) =>
         parseMinkeHostCapabilities(
           rpcValue(result, "capabilities"),
@@ -122,8 +123,8 @@ function createHostCaller(connection: Connection): HostCaller {
     return rpcValue(
       await connection.rpc.call(
         MINKE_HOST_RPC_CHANNEL,
-        endpoint,
-        payload,
+        minkeHostEndpoint(endpoint),
+        { args: { request: payload } },
         signal,
       ),
       endpoint,
@@ -175,7 +176,6 @@ export function browserFilesPort(
   );
   return {
     available: true,
-    nativeOpenAvailable: false,
     watchAvailable: false,
     async diff(request) {
       return parseFileManagerDiffResult(
@@ -191,11 +191,6 @@ export function browserFilesPort(
           "files.list",
           parseFileManagerListRequest(request),
         ),
-      );
-    },
-    async open() {
-      throw new Error(
-        "Opening a host path with a native application is desktop-only",
       );
     },
     async preview(request) {

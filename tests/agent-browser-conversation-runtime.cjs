@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const {
   mkdir,
+  readFile,
   writeFile,
 } = require('node:fs/promises');
 const http = require('node:http');
@@ -19,6 +20,7 @@ const {
   app,
   BrowserWindow,
   ipcMain,
+  nativeTheme,
   session,
   webContents,
 } = require('electron');
@@ -67,12 +69,21 @@ function loadDesktopSource() {
     export {
       bindTabs,
     } from "./desktop/main/tabs/index.ts";
+    export { DesktopBrowserGuests } from "./desktop/main/browser-guests.ts";
     export { macOSWindowOptions } from "./desktop/main/macos-window.ts";
     export { bindPluginRecoveryIpc } from "./desktop/main/plugin-recovery-ipc.ts";
     export { PluginRecoveryRuntime } from "./desktop/main/plugin-recovery.ts";
     export { bindDirectoryPickerIpc } from "./desktop/main/directory-picker.ts";
     export { bindTerminalSettingsIpc } from "./desktop/main/terminal-settings.ts";
+    export { bindAppUpdateSettingsIpc } from "./desktop/main/app-update-settings.ts";
+    export { bindWebSearchSettingsIpc } from "./desktop/main/web-search-settings.ts";
+    export { installDesktopShortcuts } from "./desktop/main/desktop-shortcuts.ts";
+    export { migrateTerminalFontProfile } from "./desktop/main/profile-migration.ts";
     export { MinkeConfigStore } from "./desktop/main/minke-config.ts";
+    export { bindWindowLocale, readHarnessLocaleBootstrap } from "./desktop/main/window-locale.ts";
+    export { bindWindowTheme } from "./desktop/main/window-theme.ts";
+    export { bindDesktopUpdates } from "./desktop/main/desktop-updates.ts";
+    export { DESKTOP_UPDATE_IPC } from "./packages/harness-overlay/src/shared-updates-contract.ts";
   `;
   const bundled = buildSync({
     alias: {
@@ -834,15 +845,24 @@ async function run() {
 
   let window;
   let tabsBinding;
+  let browserBinding;
   let pluginRecoveryBinding;
   let directoryPickerBinding;
   let terminalSettingsBinding;
+  const preferenceBindings = [];
+  let localeBinding;
+  let themeBinding;
+  let updatesBinding;
+  let disposeInputDiagnostics;
+  let desktopShortcuts;
+  const inputDiagnostics = { scriptedKeyDowns: 0, otherNativeKeyDowns: 0 };
   let harness;
   let agentBrowser;
   try {
     await app.whenReady();
     trace('Electron ready');
     const {
+      DesktopBrowserGuests,
       AgentBrowserRuntime,
       HarnessRuntime,
       SqliteAgentBrowserHistory,
@@ -852,7 +872,16 @@ async function run() {
       PluginRecoveryRuntime,
       bindDirectoryPickerIpc,
       bindTerminalSettingsIpc,
+      bindAppUpdateSettingsIpc,
+      bindWebSearchSettingsIpc,
       MinkeConfigStore,
+      migrateTerminalFontProfile,
+      installDesktopShortcuts,
+      bindWindowLocale,
+      readHarnessLocaleBootstrap,
+      bindWindowTheme,
+      bindDesktopUpdates,
+      DESKTOP_UPDATE_IPC,
     } = loadDesktopSource();
     const browserHistory = new SqliteAgentBrowserHistory({
       path: join(
@@ -887,6 +916,14 @@ async function run() {
         );
       },
     });
+    const nativePathFixture = join(dshHome, 'native-path-fixture.mjs');
+    await writeFile(nativePathFixture, await readFile(join(__dirname, 'support', 'native-path-fixture.mjs')));
+    await writeFile(join(dshHome, 'cordis.patch.yml'), JSON.stringify([
+      { insert: [{ id: 'test-native-paths', name: nativePathFixture }] },
+    ]));
+    const config = new MinkeConfigStore(temporaryRoot);
+    await config.terminal.write({ fontFamily: 'monospace', fontSize: 16, lineHeight: 1.3 });
+    await migrateTerminalFontProfile({ runtimeRoot, dshHome, electronExecutable: process.execPath }, await config.terminal.read());
     const harnessEndpoint = await harness.start();
     const harnessUrl = harnessEndpoint.origin;
     trace(`Harness ready at ${harnessUrl}`);
@@ -907,21 +944,57 @@ async function run() {
       },
     });
     const harnessOrigin = harnessEndpoint.origin;
-    const openedFilePaths = [];
+    const nativeLocales = [];
+    const authorizeWindow = event => event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame
+      && new URL(event.senderFrame.url).origin === harnessOrigin;
+    localeBinding = bindWindowLocale(window, { setLocale: value => nativeLocales.push(value) }, authorizeWindow,
+      () => readHarnessLocaleBootstrap(harnessOrigin, ['en-US'], (url, init) => window.webContents.session.fetch(url, init)));
+    themeBinding = bindWindowTheme(window, nativeTheme, authorizeWindow);
+    let updateState = { phase: 'idle' }, updateOpens = 0;
+    updatesBinding = bindDesktopUpdates(ipcMain, {
+      status: () => updateState, open: async () => { updateOpens++; },
+    }, authorizeWindow);
+    const publishUpdate = state => { updateState = state; window.webContents.send(DESKTOP_UPDATE_IPC.changed, state); };
+    // Native before-input-event is synchronous for sendInputEvent. Count other
+    // native key presses without recording what the user typed or suppressing it.
+    const contents = window.webContents;
+    const sendInput = contents.sendInputEvent;
+    let injectingInput = 0;
+    contents.sendInputEvent = event => {
+      injectingInput++;
+      try { sendInput.call(contents, event); }
+      finally { injectingInput--; }
+    };
+    const recordInput = (_event, input) => {
+      if (input.type === 'keyDown') inputDiagnostics[injectingInput ? 'scriptedKeyDowns' : 'otherNativeKeyDowns']++;
+    };
+    contents.on('before-input-event', recordInput);
+    disposeInputDiagnostics = () => {
+      contents.off('before-input-event', recordInput);
+      contents.sendInputEvent = sendInput;
+    };
+    const readOpenedFilePaths = async () => {
+      const response = await window.webContents.session.fetch(new URL('/smoke/opened-paths', harnessOrigin).href);
+      assert.equal(response.ok, true);
+      return response.json();
+    };
     const openedExternalUrls = [];
-    const config = new MinkeConfigStore(temporaryRoot);
-    await config.terminal.write({ fontFamily: 'monospace', fontSize: 16, lineHeight: 1.3 });
+    desktopShortcuts = installDesktopShortcuts(() => window, temporaryRoot,
+      process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'linux', () => {},
+      event => event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame,
+      async () => ({}));
+    desktopShortcuts.attach(window);
     terminalSettingsBinding = bindTerminalSettingsIpc(ipcMain, config.terminal,
       event => event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame);
+    preferenceBindings.push(
+      bindAppUpdateSettingsIpc(ipcMain, config.appUpdate, () => {}, authorizeWindow),
+      bindWebSearchSettingsIpc(ipcMain, config.webSearch, authorizeWindow),
+    );
     tabsBinding = bindTabs(
       ipcMain,
       window.webContents,
       {
         async openExternal(url) { openedExternalUrls.push(url); },
-        async openPath(path) {
-          openedFilePaths.push(path);
-          return '';
-        },
       },
       (event) =>
         event.sender === window.webContents &&
@@ -937,9 +1010,16 @@ async function run() {
         fileSystemRoot: parse(workspace).root,
         minkeConfigPath: config.path,
         agentBrowser,
-        prepareWebSession() {},
       },
     );
+    browserBinding = new DesktopBrowserGuests({
+      harnessUrl: () => harnessOrigin,
+      preload: join(projectRoot, '.vite', 'build', 'tabs-web-preload.js'),
+      external: { openExternal: async url => { openedExternalUrls.push(url); } },
+      agentBrowser,
+    }).bind(ipcMain, window.webContents,
+      event => event.sender === window.webContents && new URL(event.senderFrame.url).origin === harnessOrigin,
+      (guest, name) => desktopShortcuts.attachGuest(window, guest, name));
     pluginRecoveryBinding = bindPluginRecoveryIpc(ipcMain, new PluginRecoveryRuntime({
       runtimeRoot, dshHome, electronExecutable: process.execPath,
     }), event => event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame,
@@ -996,6 +1076,28 @@ async function run() {
       'Harness React root',
     );
     trace('Harness React root mounted');
+    await waitFor(() => nativeLocales.includes('en'), 'DSH locale bridge initializes the native window');
+    assert.deepEqual(await rendererValue(window, '() => window.__DSH_LOCALE__.read()'), { languages: ['en-US'], preference: null });
+    await writeFile(join(workspace, 'native-reference.txt'), 'Referenced through DSH Desktop host paths.');
+    await waitFor(() => rendererValue(window, '() => document.querySelector("input[type=file]") !== null'), 'native file picker input');
+    window.webContents.debugger.attach('1.3');
+    try {
+      const { root } = await window.webContents.debugger.sendCommand('DOM.getDocument');
+      const { nodeId } = await window.webContents.debugger.sendCommand('DOM.querySelector', { nodeId: root.nodeId, selector: 'input[type=file]' });
+      await window.webContents.debugger.sendCommand('DOM.setFileInputFiles', { nodeId, files: [join(workspace, 'native-reference.txt')] });
+      await waitFor(() => rendererValue(window, `() => document.querySelector('[data-composer-chip="reference"]')?.textContent.includes('native-reference.txt')`), 'disk file becomes a native DSH reference');
+    } finally {
+      window.webContents.debugger.detach();
+    }
+    await rendererValue(window, `() => { document.querySelector('[data-composer-input]').focus(); return true; }`);
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'a', modifiers: [process.platform === 'darwin' ? 'meta' : 'control'] });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'a', modifiers: [process.platform === 'darwin' ? 'meta' : 'control'] });
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' });
+    await waitFor(() => rendererValue(window, `() => document.querySelector('[data-composer-input]')?.textContent === ''`), 'file reference draft cleared');
+    trace('standard desktop locale bootstrap and native file reference passed');
+    await require('./desktop-updates-ui.cjs').verifyDesktopUpdatesUI({ window, rendererValue, waitFor,
+      publish: publishUpdate, opens: () => updateOpens });
     // Exercise real link interception on the initial blank Session.
     await waitFor(() => rendererValue(window, `() => document.querySelector('[data-minke-new-session-tabs-action]') !== null`), 'start-page tab controls');
     await rendererValue(window, `() => {
@@ -1014,11 +1116,12 @@ async function run() {
       const rect = host.getBoundingClientRect();
       const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
       if (hit?.closest('[data-minke-tab-instance]') !== host) return false;
-      return guest.getWebContentsId();
+      try { return guest.getURL() === ${JSON.stringify(fixture.url)} && guest.getWebContentsId(); }
+      catch { return false; }
     }`), 'start-page browser to paint above the initial Sidebar');
     trace('start-page Web content painted above the initial Sidebar');
     if (process.env.MINKE_SIDEBAR_UI_E2E === '1') {
-      await require('./native-sidebar-ui.cjs').verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl: fixture.url, rendererValue, waitFor, workspace, openedFilePaths });
+      await require('./native-sidebar-ui.cjs').verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl: fixture.url, rendererValue, waitFor, workspace, readOpenedFilePaths });
       await verifySubagentSidebarUI({ window, harnessUrl, harnessCookie, parentSessionId: created.sessionId,
         rpc, rendererValue, waitFor, waitForAssistantMarker, promptThroughComposer, openedExternalUrls });
       return;
@@ -1444,12 +1547,13 @@ async function run() {
       document.querySelector('[data-dockkit-add-tab]').click();
       return true;
     }`);
-    await waitFor(() => rendererValue(window, `() => document.querySelector('[data-minke-tabs-create-menu] [data-option^="dsh:files:"]') !== null`), 'DSH Files entry in the add menu');
-    assert.equal(await rendererValue(window, `() => document.querySelector('.minke-tabs-native-host:has(.minke-agent-browser__view)').inert`), false, 'opening the add menu keeps the current browser visible');
+    await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-right-guide-entry="files"]')?.checkVisibility({ checkVisibilityCSS: true })`), 'DSH Files entry in the native Start tab');
+    assert.equal(await rendererValue(window, `() => document.querySelector('.minke-tabs-native-host:has(.minke-agent-browser__view)').inert`), true, 'the native Start tab hides the retained browser');
     await rendererValue(window, `() => {
-      document.querySelector('[data-minke-tabs-create-menu] [data-option^="dsh:files:"]').click();
+      document.querySelector('[data-sidebar-right-guide-entry="files"]').click();
       return true;
     }`);
+    await waitFor(() => rendererValue(window, `() => document.querySelector('[data-files-state="tree"]') !== null`), 'native Workspace files content');
     await waitFor(() => rendererValue(window, `() =>
       document.querySelector('.minke-tabs-native-host:has(.minke-agent-browser__view)')?.inert === true
     `), 'native tab switch to hide the retained browser');
@@ -1552,12 +1656,11 @@ async function run() {
     assert.equal(await rendererValue(window, `() => document.querySelector('.minke-agent-browser__guest').getWebContentsId()`), originalGuestId);
     trace('native fullscreen, split, drag-to-float and dock retained the same browser instance');
 
-    await rendererValue(window, `() => {
-      const settings = [...document.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Settings' || button.getAttribute('aria-label') === 'Settings');
-      if (!settings) throw new Error('Settings entry is missing');
-      settings.click();
-      return true;
-    }`);
+    // DSH's native shortcut works with the left navigation collapsed after
+    // fullscreen/docking, where its Settings button is not mounted.
+    window.webContents.focus();
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: ',', modifiers: [process.platform === 'darwin' ? 'meta' : 'control'] });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: ',', modifiers: [process.platform === 'darwin' ? 'meta' : 'control'] });
     await waitFor(() => rendererValue(window, `() => {
       const panel = document.querySelector('[role="dialog"][aria-modal="true"]');
       const host = document.querySelector('.minke-tabs-native-host:has(.minke-agent-browser__view)');
@@ -1599,6 +1702,7 @@ async function run() {
     );
 
   } catch (error) {
+    trace('native keyboard diagnostics: ' + JSON.stringify(inputDiagnostics));
     if (process.env.MINKE_SIDEBAR_UI_E2E === '1' && window && !window.isDestroyed()) {
       if (process.env.MINKE_SIDEBAR_SCREENSHOT) await writeFile(`${process.env.MINKE_SIDEBAR_SCREENSHOT}.failed.png`, (await window.webContents.capturePage()).toPNG());
     }
@@ -1610,10 +1714,18 @@ async function run() {
   } finally {
     trace('cleaning up');
     await harness?.stop();
+    browserBinding?.dispose();
     tabsBinding?.dispose();
     pluginRecoveryBinding?.dispose();
     directoryPickerBinding?.dispose();
     terminalSettingsBinding?.dispose();
+    preferenceBindings.forEach(binding => binding.dispose());
+    localeBinding?.dispose();
+    themeBinding?.dispose();
+    updatesBinding?.dispose();
+    nativeTheme.themeSource = 'system';
+    desktopShortcuts?.dispose();
+    disposeInputDiagnostics?.();
     agentBrowser?.dispose();
     if (window !== undefined && !window.isDestroyed()) window.destroy();
     await Promise.allSettled([

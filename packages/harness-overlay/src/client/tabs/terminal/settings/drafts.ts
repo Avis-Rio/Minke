@@ -7,7 +7,7 @@ import type {
   TerminalSettings,
 } from "@minke/harness-overlay/terminal-settings-contract.ts";
 
-export type SettingField = keyof TerminalSettings;
+export type SettingField = keyof Pick<TerminalSettings, "lineHeight">;
 export type TerminalSettingDrafts = Record<SettingField, string>;
 
 /**

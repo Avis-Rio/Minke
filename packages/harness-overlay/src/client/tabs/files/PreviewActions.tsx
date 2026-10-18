@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { TabsCreateMenu, type TabsCreateMenuOption } from "../TabsCreateMenu.tsx";
 import type { FilesTabsController } from "./controller.ts";
 import { filesDocumentKind } from "./document-kind.ts";
@@ -10,6 +10,8 @@ export function PreviewActions({ tabId, preview, controller, t, active }: {
   tabId: string; preview: FilesPreviewState; controller: FilesTabsController; t: FilesTabsTranslate; active: boolean;
 }): ReactNode {
   const ref = useRef<HTMLDivElement>(null);
+  const paths = controller.pathActions;
+  const nativeOpenAvailable = useSyncExternalStore(paths.subscribe, paths.getSnapshot, paths.getSnapshot);
   const [compact, setCompact] = useState(false);
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
@@ -46,7 +48,7 @@ export function PreviewActions({ tabId, preview, controller, t, active }: {
     setOpen(false);
     controller.closePreview(tabId);
   };
-  const actions = controller.nativeOpenAvailable ? [{
+  const actions = nativeOpenAvailable ? [{
     id: "open-folder", label: t("files.preview.openFolder"), icon: <OpenSystemIcon size={15} />,
     create: () => controller.openContainingFolder(tabId, preview.entry.path),
   }] : [];

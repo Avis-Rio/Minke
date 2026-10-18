@@ -16,7 +16,7 @@ test("renderable files expose Preview alongside Source and Diff", () => {
     const snapshot = { theme: "github-light-default" };
     const markup = renderToStaticMarkup(createElement(FilePreviewPane, {
       tabId: "files-1", active: false, t,
-      controller: { nativeOpenAvailable: true },
+      controller: { pathActions: { getSnapshot: () => true, subscribe: () => () => {} } },
       codeThemes: { getSnapshot: () => snapshot, subscribe: () => () => {} },
       preview: {
         entry: { path: `/workspace/${name}`, name, kind: "file" },
@@ -37,7 +37,7 @@ test("preview switches retain drafts and lazy diff; unsupported and incomplete d
     async list({ path }) { return { path, entries: [], truncated: false }; },
     async preview({ path }) { return { kind: "text", path, name: path.split("/").at(-1), content: "# Original", size: 10, version, truncated: path.includes("large") }; },
     async diff({ path }) { diffReads++; return { kind: "text", path, original: "# HEAD" }; },
-    async open() {}, async write() { throw new Error("switching modes must not save"); },
+    async write() { throw new Error("switching modes must not save"); },
     watch() { return () => {}; },
   });
   try {
@@ -68,8 +68,10 @@ test("file location opens the containing folder for POSIX, drive-root and UNC pa
   const opened = [];
   const files = new FilesTabsController(tabs, {
     available: true,
-    async open({ path }) { opened.push(path); },
-  });
+  }, { pathActions: {
+    getSnapshot: () => true, subscribe: () => () => {},
+    async open(path) { opened.push(path); },
+  } });
   try {
     for (const [path, folder] of [
       ["/workspace/src/main.ts", "/workspace/src"],

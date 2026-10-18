@@ -10,9 +10,10 @@ import {
 import {
   createPortal,
 } from "react-dom";
+import { Button, MenuSurface, ShortcutKeys } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   detectShortcutPlatform,
-  formatShortcutBinding,
+  formatShortcutBindingParts,
   formatShortcutBindingAria,
   type ShortcutPlatform,
 } from "../shortcuts/binding.ts";
@@ -358,7 +359,7 @@ export function TabsCreateMenu({
     return null;
   }
 
-  const renderOption = (option: TabsCreateMenuOption): ReactNode => {
+  const renderOption = (option: TabsCreateMenuOption) => {
     const resolvedBinding = shortcutBinding?.(option.id);
     const binding =
       typeof resolvedBinding === "string" &&
@@ -366,7 +367,7 @@ export function TabsCreateMenu({
         ? resolvedBinding
         : undefined;
     return (
-      <button
+      <Button
         key={option.id}
         type="button"
         className="minke-tabs-create-menu__item"
@@ -398,19 +399,20 @@ export function TabsCreateMenu({
           {option.label}
         </span>
         {binding !== undefined && (
-          <kbd
+          <span
             className="minke-tabs-create-menu__shortcut"
             aria-hidden="true"
           >
-            {formatShortcutBinding(binding, shortcutPlatform)}
-          </kbd>
+            <ShortcutKeys keys={formatShortcutBindingParts(binding, shortcutPlatform)
+              .flatMap((key, index) => shortcutPlatform === "other" && index > 0 ? ["+", key] : [key])} />
+          </span>
         )}
-      </button>
+      </Button>
     );
   };
 
   return createPortal(
-    <div
+    <MenuSurface
       id={id}
       ref={menuRef}
       className="minke-tabs-create-menu"
@@ -434,7 +436,7 @@ export function TabsCreateMenu({
             <div className="minke-tabs-create-menu__heading" aria-hidden="true">{group.label}</div>
             {group.options.map(renderOption)}
           </div>)}
-    </div>,
+    </MenuSurface>,
     anchor.ownerDocument.body,
   );
 }

@@ -12,13 +12,12 @@ export interface NativeTabSurface {
   readonly sessionId: string;
   readonly expanded: boolean;
   readonly activeId: string | undefined;
-  readonly paneIds: readonly string[];
   readonly tabs: readonly NativeTabRecord[];
 }
 
 export interface NativeTabsConnection {
   read(): { surfaces: readonly NativeTabSurface[] };
-  open(sessionId: string, tab: { kind: string; contentId: string; title: string; replaceTab?: string; paneId?: string }, activate: boolean): void;
+  open(sessionId: string, tab: { kind: string; contentId: string; title: string; replaceTab?: string }, activate: boolean): void;
   focus(sessionId: string, tabId: string): void;
   place(sessionId: string, tabId: string, targetId: string, edge: "before" | "after"): void;
   close(contentId: string): void;
@@ -61,8 +60,6 @@ export interface NativeGuideEntry {
 /** Public DSH registry surface used to retain other plugins' guide entries. */
 export interface NativeTabRegistry {
   register(definition: { id: string; kind: string; title(): string; guide?: readonly Omit<NativeGuideEntry, "kind" | "providerId">[] }): () => void;
-  guide(): readonly NativeGuideEntry[];
-  subscribe(listener: () => void): () => void;
 }
 
 export const NATIVE_TAB_PREFIX = "dsh-resource://minke-tab/";

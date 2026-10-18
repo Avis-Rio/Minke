@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
+import { Button } from "@deepseek-ai/dsh-client-ui-primitives";
 
 export interface ToolbarButtonProps {
   label: string;
@@ -6,12 +7,13 @@ export interface ToolbarButtonProps {
   pressed?: boolean;
   activeTone?: "success";
   onClick: () => void;
-  children: ReactNode;
+  children: ComponentProps<typeof Button>["children"];
 }
 
 export function ToolbarButton(props: ToolbarButtonProps): ReactNode {
   return (
-    <button
+    <Button
+      size="sm"
       type="button"
       className="minke-tabs-toolbar__button"
       aria-label={props.label}
@@ -22,6 +24,6 @@ export function ToolbarButton(props: ToolbarButtonProps): ReactNode {
       onClick={props.onClick}
     >
       {props.children}
-    </button>
+    </Button>
   );
 }

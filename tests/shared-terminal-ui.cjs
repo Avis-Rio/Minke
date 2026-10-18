@@ -5,7 +5,7 @@ const { readFile, writeFile } = require('node:fs/promises');
 const { join } = require('node:path');
 
 /** Real input, preference updates and renderer reload against the production PTY. */
-exports.verifySharedTerminalUI = async ({ window, rendererValue, waitFor, workspace, click, pressKey, pressEnter, typeKeys }) => {
+exports.verifySharedTerminalUI = async ({ window, rendererValue, waitFor, workspace, click, pressKey, pressShortcut, pressEnter, typeKeys }) => {
   const toggle = '[data-minke-new-session-tabs-action] [data-minke-tabs-placement="bottom"]';
   const bottom = '.minke-tabs-panel[data-placement="bottom"]';
   const screen = bottom + ' [data-terminal-placement="bottom"]:not([hidden]) [data-terminal-renderer="dsh"]';
@@ -33,7 +33,7 @@ exports.verifySharedTerminalUI = async ({ window, rendererValue, waitFor, worksp
       return value.every(item => item?.size === size + 'px') && value;
     }, 'shared live Terminal typography');
     assert.deepEqual(appearances[0], appearances[1], 'both placements share font, line spacing and background');
-    assert.equal(appearances[0].font, 'monospace', 'saved Minke font preferences reach the native screen');
+    assert.ok(appearances[0].font.includes('monospace'), 'migrated General font preferences reach the native screen');
   };
   await click(toggle);
   await run(process.platform === 'win32'
@@ -43,18 +43,27 @@ exports.verifySharedTerminalUI = async ({ window, rendererValue, waitFor, worksp
   if (shellPid !== undefined) assert.ok(Number.isSafeInteger(shellPid) && shellPid > 0);
   await checkAppearance(16);
 
-  await click('button[aria-label="Settings"]');
+  await pressShortcut(',');
   await waitFor(() => rendererValue(window, `() => document.querySelector('[data-shortcut-modal="settings"]') !== null`), 'Settings for shared typography');
-  await click('[data-minke-settings-navigation-logo]');
-  const fontSize = '[data-minke-terminal-settings] input[aria-describedby~="minke-terminal-settings-font-size-help"]';
-  await click(fontSize);
-  await waitFor(() => rendererValue(window, `() => document.activeElement === document.querySelector('${fontSize}')`), 'font size input focus');
+  await click('button[aria-label="More font settings"]');
+  await click('button[aria-label="Increase code font size"]');
+  await waitFor(() => rendererValue(window, `() => getComputedStyle(document.body).getPropertyValue('--dsh-code-font-size').trim() === '12px'`), 'General code size 12');
   for (const size of [17, 18]) {
-    pressKey('Up');
-    await waitFor(() => rendererValue(window, `() => document.querySelector('${fontSize}').value === '${size}'`), 'font size input ' + size);
+    await click('button[aria-label="Increase terminal font size"]');
+    await waitFor(() => rendererValue(window, `() => getComputedStyle(document.body).getPropertyValue('--dsh-terminal-font-size').trim() === '${size}px'`), 'General terminal size ' + size);
   }
+  await click('[data-minke-settings-navigation-logo]');
+  assert.equal(await rendererValue(window, `() => document.querySelector('[data-minke-terminal-settings] input[aria-describedby~="minke-terminal-settings-font-size-help"]') === null`), true, 'no duplicate terminal font editor');
+  const lineHeight = '[data-minke-terminal-settings] input[aria-describedby~="minke-terminal-settings-line-height-help"]';
+  await click(lineHeight);
+  await waitFor(() => rendererValue(window, `() => document.activeElement === document.querySelector('${lineHeight}')`), 'line spacing keyboard focus');
+  pressKey('Up');
+  // Native input updates its value before React publishes the draft preview.
+  // Observe that edit before sending the separate blur/commit action.
+  await waitFor(() => rendererValue(window, `() => document.querySelector('${lineHeight}')?.value === '1.35' && document.querySelector('.minke-terminal-settings__preview-code')?.style.lineHeight === '1.35'`), 'line spacing draft preview');
   pressKey('Tab');
-  await waitFor(() => rendererValue(window, `async () => (await window.minkeDesktop.terminal.readSettings()).fontSize === 18`), 'saved shared font size');
+  await waitFor(() => rendererValue(window, `async () => (await window.minkeDesktop.terminal.readSettings()).lineHeight === 1.35`), 'Minke line spacing remains editable');
+  assert.equal(await rendererValue(window, `async () => (await window.minkeDesktop.terminal.readSettings()).fontSize`), 16, 'legacy typography remains a backup');
   const closeIndex = await rendererValue(window, `() => [...document.querySelectorAll('[data-shortcut-modal="settings"] button')].findIndex(button => button.textContent.trim() === 'Close')`);
   assert.ok(closeIndex >= 0, 'native Settings exposes its accessible Close action');
   await click('[data-shortcut-modal="settings"] button', closeIndex);

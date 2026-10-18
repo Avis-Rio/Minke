@@ -1,5 +1,6 @@
 import { mainSessionId, type HarnessSessionList } from "../core/sessions.ts";
 import { PanelHeaderIcon } from "../core/HeaderIcons.tsx";
+import { Button } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   createElement,
   useSyncExternalStore,
@@ -104,12 +105,15 @@ export function TabsHeaderAction({
             : "header.openRight",
       );
       return createElement(
-        "button",
+        Button,
         {
           key: placement,
+          size: "sm",
           type: "button",
-          "data-minke-tabs-header-action": "",
-          "data-minke-tabs-placement": placement,
+          ...{
+            "data-minke-tabs-header-action": "",
+            "data-minke-tabs-placement": placement,
+          },
           "aria-label": label,
           title: label,
           "aria-controls": placement === "right" && native?.connected ? undefined : tabsPanelId(placement),

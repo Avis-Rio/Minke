@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isAbsolute } from "node:path";
 import {
   remoteErrorOf,
 } from "@deepseek-ai/dsh-typert-protocol";
@@ -403,10 +404,9 @@ function toolArguments(
 }
 
 /**
- * Recover paths only from the mutating filesystem tools shipped by Harness.
- * The raw Session log intentionally carries no presentation `view`, so unknown
- * tools are ignored instead of guessing that an arbitrary path-like argument
- * represents a successful write.
+ * Admit only the mutating filesystem tools shipped by Harness. Result metadata
+ * supplies canonical paths; absolute call arguments support older records.
+ * Unknown tools never imply a successful write from a path-like argument.
  */
 function producedPathsForCall(
   event: SessionEventRecord,
@@ -570,9 +570,15 @@ function consumeOperationEvent(
   }
   const resultCallId = successfulToolResultCallId(event);
   if (resultCallId !== undefined) {
-    for (
-      const path of cursor.toolCalls.get(resultCallId) ?? []
-    ) {
+    const candidates = cursor.toolCalls.get(resultCallId) ?? [];
+    // Successful filesystem results record the resolved execution-world path.
+    // Raw relative arguments cannot be resolved against the final directory:
+    // a turn may write in several directories. Legacy absolute inputs are safe.
+    const canonical = nonEmptyString(object(event.data.meta)?.path);
+    const paths = candidates.length === 0 ? [] : canonical === undefined
+      ? candidates.filter(path => isAbsolute(path))
+      : isAbsolute(canonical) ? [canonical] : [];
+    for (const path of paths) {
       cursor.producedPaths.add(path);
     }
     return;

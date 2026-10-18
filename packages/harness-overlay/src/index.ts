@@ -1,16 +1,6 @@
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
-import {
-  isMinkeHostRpcEndpoint,
-  MINKE_HOST_PROTOCOL_VERSION,
-  MINKE_HOST_RPC_CHANNEL,
-  type MinkeHostCapabilities,
-  type MinkeHostRpcEndpoint,
-  type MinkeHostRpcResponse,
-} from "./minke-host-contract.ts";
-import {
-  FileManagerRuntime,
-} from "./host/file-manager.ts";
+import { MinkeWorkspace } from "./host/workspace-api.ts";
 import {
   installMinkePwaHost,
   type PwaWebServer,
@@ -40,12 +30,6 @@ import {
   calibrateMinkeImIdentity,
   isMinkeImSessionId,
 } from "./host/im-identity.ts";
-import {
-  parseFileManagerDiffRequest,
-  parseFileManagerListRequest,
-  parseFileManagerPreviewRequest,
-  parseFileManagerWriteRequest,
-} from "./tabs/files-contract.ts";
 
 export const name = "minke-host";
 export const inject = [
@@ -66,36 +50,12 @@ export interface Config {
   readonly previewStorePath?: string;
 }
 
-interface HostRpcError {
-  readonly code: "bad-request" | "internal";
-  readonly message: string;
-  readonly details: {
-    readonly issues?: readonly never[];
-  };
-}
-
-type HostRpcResult =
-  | { readonly ok: true; readonly value: unknown }
-  | { readonly ok: false; readonly error: HostRpcError };
-
-type HostRpcHandlers = {
-  readonly [Endpoint in MinkeHostRpcEndpoint]: (
-    payload: unknown,
-    signal: AbortSignal,
-  ) =>
-    | MinkeHostRpcResponse<Endpoint>
-    | Promise<MinkeHostRpcResponse<Endpoint>>;
-};
-
 interface MinkeHostAgent {
   readonly id: string;
   readonly status: "idle" | "running";
   cancel(cause: { readonly kind: "user" }): void;
   readonly session: {
     readonly id: string;
-    readonly header?: {
-      readonly cwd?: string;
-    };
   };
   readonly ctx: {
     readonly systemPrompt: {
@@ -128,18 +88,8 @@ interface MinkeHostContext {
     replaceTrustedHosts(
       trustedHosts: readonly string[],
     ): void;
-    readonly rpc: {
-      handle(
-        channel: string,
-        handler: (
-          endpoint: string,
-          payload: unknown,
-          signal: AbortSignal,
-        ) => Promise<HostRpcResult>,
-        options: { readonly authority: "trusted-host" },
-      ): () => Promise<void>;
-    };
   };
+  plugin(service: typeof MinkeWorkspace, config: { rootPath: string }): unknown;
   readonly sessionController: AgentTurnSessionControllerPort;
   readonly agents: {
     get(sessionId: string): MinkeHostAgent | undefined;
@@ -276,29 +226,6 @@ function configuredPreviewStore(
   return resolve(candidate);
 }
 
-function failure(error: unknown): HostRpcResult {
-  const message =
-    error instanceof Error ? error.message : String(error);
-  if (error instanceof TypeError) {
-    return {
-      ok: false,
-      error: {
-        code: "bad-request",
-        message,
-        details: { issues: [] },
-      },
-    };
-  }
-  return {
-    ok: false,
-    error: {
-      code: "internal",
-      message,
-      details: {},
-    },
-  };
-}
-
 /**
  * Mount portable Minke capabilities on DSH's trusted browser transport seam.
  * Files use this transport; terminals use DSH. Native Web views and OS path
@@ -325,9 +252,7 @@ export function apply(
     previewPublisher: {
       async publish(input) {
         if (!isMinkeImSessionId(input.sessionId)) return [];
-        const agent = ctx.agents.get(input.sessionId);
         return await previews.publish({
-          cwd: agent?.session.header?.cwd ?? rootPath,
           operationId: input.operationId,
           paths: input.paths,
         });
@@ -357,64 +282,9 @@ export function apply(
       );
     }
   }
-  const files = new FileManagerRuntime({
-    rootPath,
-    openPath: async () =>
-      "native path opening is unavailable through Minke Host",
-  });
   ctx.effect(
     () => installMinkePwaHost(ctx.webServer),
     "minke-host: PWA resources",
   );
-  const capabilities: MinkeHostCapabilities = {
-    protocolVersion: MINKE_HOST_PROTOCOL_VERSION,
-    files: {
-      available: true,
-      nativeOpen: false,
-      root: rootPath,
-      watch: false,
-      write: true,
-    },
-    tabs: {
-      available: true,
-      embeddedWeb: false,
-      state: "client",
-    },
-  };
-  const handlers: HostRpcHandlers = {
-    capabilities: () => capabilities,
-    "files.diff": (payload) =>
-      files.diff(parseFileManagerDiffRequest(payload)),
-    "files.list": (payload) =>
-      files.list(parseFileManagerListRequest(payload)),
-    "files.preview": (payload) =>
-      files.preview(parseFileManagerPreviewRequest(payload)),
-    "files.write": (payload) =>
-      files.write(parseFileManagerWriteRequest(payload)),
-  };
-
-  ctx.connection.rpc.handle(
-    MINKE_HOST_RPC_CHANNEL,
-    async (endpoint, payload, signal) => {
-      if (!isMinkeHostRpcEndpoint(endpoint)) {
-        return {
-          ok: false,
-          error: {
-            code: "bad-request",
-            message: `unknown Minke Host endpoint: ${endpoint}`,
-            details: { issues: [] },
-          },
-        };
-      }
-      try {
-        return {
-          ok: true,
-          value: await handlers[endpoint](payload, signal),
-        };
-      } catch (error) {
-        return failure(error);
-      }
-    },
-    { authority: "trusted-host" },
-  );
+  ctx.plugin(MinkeWorkspace, { rootPath });
 }

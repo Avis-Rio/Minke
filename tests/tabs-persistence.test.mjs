@@ -77,7 +77,7 @@ test("a restored file draft keeps the original disk version and refuses a confli
   t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, "draft.txt");
   await writeFile(path, "original");
-  const disk = new FileManagerRuntime({ rootPath: directory, openPath: async () => "" });
+  const disk = new FileManagerRuntime({ rootPath: directory });
   const port = {
     available: true,
     list: request => disk.list(request), preview: request => disk.preview(request),
