@@ -7,7 +7,7 @@ import { MakerZIP } from "@electron-forge/maker-zip";
 import { FusesPlugin } from "@electron-forge/plugin-fuses";
 import { VitePlugin } from "@electron-forge/plugin-vite";
 import type { ForgeConfig } from "@electron-forge/shared-types";
-import { cp, mkdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pruneMacElectronLocales } from "./scripts/forge/electron-locales.ts";
 import {
@@ -21,7 +21,6 @@ import {
 const projectRoot = __dirname;
 const iconRoot = join(projectRoot, "resources", "icons");
 const appIcon = join(iconRoot, "icon.png");
-const sysPackageRoot = join(projectRoot, "packages", "sys");
 const macOSSigning = resolveMacOSSigningConfig(process.env);
 // electron-installer-debian supports compression; Forge's option type omits it.
 const debOptions = {
@@ -42,7 +41,7 @@ const config: ForgeConfig = {
   hooks: {
     packageAfterCopy: async (
       _forgeConfig,
-      buildPath,
+      _buildPath,
       _electronVersion,
       platform,
       arch,
@@ -52,13 +51,6 @@ const config: ForgeConfig = {
         String(arch),
         "package copy hook started",
       );
-      if (platform === "darwin") {
-        const nodeModulesRoot = join(buildPath, "node_modules");
-        await mkdir(nodeModulesRoot, { recursive: true });
-        await cp(sysPackageRoot, join(nodeModulesRoot, "sys"), {
-          recursive: true,
-        });
-      }
       logPackageStage(
         platform,
         String(arch),
@@ -102,6 +94,9 @@ const config: ForgeConfig = {
     executableName: "Minke",
     appBundleId: "me.lencx.minke",
     appCategoryType: "public.app-category.developer-tools",
+    extendInfo: {
+      NSMicrophoneUsageDescription: "Minke uses your microphone to transcribe speech into message drafts.",
+    },
     osxSign: {
       // A stable certificate keeps the Keychain ACL valid across updates.
       // Local machines without one retain the pre-release ad-hoc fallback.
@@ -112,13 +107,11 @@ const config: ForgeConfig = {
         : { keychain: macOSSigning.keychain }),
       optionsForFile: () => ({
         hardenedRuntime: false,
+        entitlements: join(projectRoot, "scripts", "forge", "macos-entitlements.plist"),
       }),
     },
-    asar: {
-      unpack: "**/node_modules/sys/**/*.node",
-    },
-    // The Vite plugin copies only .vite and packageAfterCopy injects the sole
-    // external native package on macOS. Packager pruning would otherwise walk
+    asar: true,
+    // The Vite plugin copies only .vite. Packager pruning would otherwise walk
     // the complete pnpm graph before that ignore policy, retaining redundant
     // production packages and consuming several GiB on every desktop OS.
     prune: false,

@@ -1,11 +1,11 @@
 {
   "repository": "deepseek-ai/deepseek-harness",
   "submodulePath": "vendor/deepseek-harness",
-  "commit": "477b4f420553e8a52c2fbccc464d7561b239c443",
+  "commit": "687f282e8625c6b8d11ff58211a90524be2e4317",
   "packageName": "@deepseek-ai/dsh",
-  "packageVersion": "0.1.7-rc.2",
+  "packageVersion": "0.2.1-rc.2",
   "frontendPackageName": "@deepseek-ai/dsh-web-frontend",
-  "pnpmVersion": "11.7.0",
+  "pnpmVersion": "11.28.5",
   "runtimeSizeBudgetBytes": {
     "darwin": 1073741824,
     "linux": 1073741824,
@@ -20,13 +20,10 @@
     "patches/deepseek-harness/model-runtime-composition.patch",
     "patches/deepseek-harness/dynamic-trusted-hosts.patch",
     "patches/deepseek-harness/process-environment-boundaries.patch",
-    "patches/deepseek-harness/connection-rpc-webserver-scope.patch",
     "patches/deepseek-harness/sidebar-tab-lifecycle.patch",
-    "patches/deepseek-harness/sidebar-add-menu.patch",
     "patches/deepseek-harness/shared-terminal-view.patch",
     "patches/deepseek-harness/embedded-document-preview.patch",
-    "patches/deepseek-harness/session-export-feedback.patch",
-    "patches/deepseek-harness/window-drag-capability.patch"
+    "patches/deepseek-harness/session-export-feedback.patch"
   ],
   "productBundle": {
     "packageName": "@lencx/minke-harness-overlay",

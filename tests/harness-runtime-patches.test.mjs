@@ -11,8 +11,6 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createRequire, Module } from "node:module";
-import { transformSync } from "esbuild";
 import { parse } from "acorn";
 import {
   applyHarnessRuntimePatches,
@@ -180,85 +178,6 @@ test("main and Worker profile resolvers work with exposed internals without the 
       assert.equal(positive.status, 0, positive.stderr);
       assert.deepEqual(JSON.parse(positive.stdout), { esm: "function", cjs: "function" });
     }
-  } finally {
-    await rm(runtimeRoot, { recursive: true, force: true });
-  }
-});
-
-test("dedicated RPC routes inject their server and unload with the caller", { timeout: 5_000 }, async () => {
-  const upstreamPath = resolve(repositoryRoot,
-    "vendor/deepseek-harness/packages/client/connection/lib/index.js");
-  const upstream = await readFile(upstreamPath, "utf8");
-  const runtimeRoot = await mkdtemp(join(tmpdir(), "minke-rpc-scope-"));
-  const target = join(runtimeRoot,
-    "node_modules/@deepseek-ai/dsh-client-connection/lib/index.js");
-  const { Context } = createRequire(upstreamPath)("@deepseek-ai/cordis");
-
-  async function registerChannel(source, broken) {
-    // Change only module syntax; exercise the real released Connection and Cordis scopes.
-    const loaded = new Module(upstreamPath);
-    loaded.filename = upstreamPath;
-    loaded.paths = Module._nodeModulePaths(dirname(upstreamPath));
-    loaded._compile(transformSync(source, { format: "cjs", loader: "js" }).code, upstreamPath);
-    const { HostConnectionService } = loaded.exports;
-    const root = new Context();
-    const routes = new Set();
-    const registered = Promise.withResolvers();
-    const fibers = [];
-    let remove;
-    try {
-      const web = root.plugin({ apply(ctx) {
-        ctx.provide("webServer", {
-          register(route) {
-            routes.add(route);
-            registered.resolve();
-            return () => routes.delete(route);
-          },
-        });
-      } });
-      fibers.push(web);
-      await web;
-      const connection = root.plugin({ apply(ctx) {
-        new HostConnectionService(ctx, [], { isAuthenticated: () => true });
-      } });
-      fibers.push(connection);
-      await connection;
-      const caller = root.plugin({
-        inject: ["connection", "webServer"],
-        apply(ctx) {
-          remove = ctx.connection.rpc.handle("/minke", async () => ({ ok: true, value: null }));
-        },
-      });
-      fibers.push(caller);
-      if (broken) {
-        await assert.rejects(caller.await(), /cannot get property "webServer" without inject/u);
-        assert.equal(routes.size, 0);
-        return;
-      }
-      await caller;
-      await registered.promise;
-      assert.deepEqual([...routes].map((route) => [route.kind, route.path]), [["prefix", "/minke"]]);
-      await caller.dispose();
-      assert.equal(routes.size, 0, "unloading the caller must withdraw its route");
-      assert.ok(root.get("connection"), "the shared service remains available");
-      await remove();
-      assert.equal(routes.size, 0);
-    } finally {
-      for (const fiber of fibers.reverse()) await fiber.dispose();
-    }
-  }
-
-  try {
-    await registerChannel(upstream, true);
-    await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, upstream);
-    const patches = await resolveHarnessRuntimePatches(repositoryRoot, [
-      "patches/deepseek-harness/dynamic-trusted-hosts.patch",
-      "patches/deepseek-harness/connection-rpc-webserver-scope.patch",
-    ]);
-    await applyHarnessRuntimePatches(runtimeRoot, patches);
-    await verifyHarnessRuntimePatchesApplied(runtimeRoot, patches);
-    await registerChannel(await readFile(target, "utf8"), false);
   } finally {
     await rm(runtimeRoot, { recursive: true, force: true });
   }
@@ -610,7 +529,7 @@ test("LibreOffice redistribution sources are excluded only for the pinned engine
       const visible = 'import { spawnSync } from "node:child_process"; spawnSync("compiler", []);';
       await mkdir(join(packageRoot, "sources", "scripts"), { recursive: true });
       await writeFile(join(packageRoot, declared), visible);
-      await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name: packageName, version: "0.1.1" }));
+      await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name: packageName, version: "0.1.5" }));
       await writeFile(join(packageRoot, "prebuilds.json"), JSON.stringify({ source: { files: [declared] } }));
       await verifyHarnessRuntimeProcessPolicy(runtimeRoot);
 
@@ -623,7 +542,7 @@ test("LibreOffice redistribution sources are excluded only for the pinned engine
         await assert.rejects(verifyHarnessRuntimeProcessPolicy(runtimeRoot), /spawnSync\(\) must set windowsHide: true/u);
         await rm(join(packageRoot, path));
       }
-      await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name: packageName, version: "0.1.2" }));
+      await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name: packageName, version: "0.1.6" }));
       await assert.rejects(verifyHarnessRuntimeProcessPolicy(runtimeRoot), /spawnSync\(\) must set windowsHide: true/u);
     },
   );
@@ -767,6 +686,81 @@ test("catalog GUI launch exception still audits extra spawns in the same owner a
         );
       },
     );
+  }
+});
+
+const nativeCommandLaunchSource = `import { execFile } from "node:child_process";
+export const runNativeCommand = (command, args, signal, window) => new Promise((resolve, reject) => {
+  execFile(command, [...args], {
+    encoding: "utf8", env: externalCommandEnvironment(), signal, windowsHide: window === "hidden",
+  }, (error, stdout, stderr) => {
+    if (error !== null) { reject(error); return; }
+    resolve({ stdout, stderr });
+  });
+});
+`;
+
+test("native command policy preserves explicit Explorer visibility and hidden background commands", async () => {
+  for (const artifact of ["index.js", "types/runner.js"]) {
+    const source = artifact === "index.js"
+      ? nativeCommandLaunchSource.replace("export const", "const")
+      : nativeCommandLaunchSource.replace("env: externalCommandEnvironment(), ", "");
+    await withProcessPolicyFixture({
+      launchRelativePath: `node_modules/@deepseek-ai/dsh-native-command/lib/${artifact}`,
+      launchSource: source,
+    }, async (runtimeRoot) => {
+      const inspection = await verifyHarnessRuntimeProcessPolicy(runtimeRoot);
+      assert.equal(inspection.launches.length, 1);
+      const observed = [];
+      const run = new Function("execFile", "externalCommandEnvironment", `${source
+        .replace(/^import .*;\n/gmu, "")
+        .replace("export const", "const")}
+return runNativeCommand;
+`)(
+        (command, args, options, callback) => {
+          observed.push({ command, args, options });
+          callback(null, "done", "");
+        },
+        () => ({ PATH: "scrubbed-path" }),
+      );
+      const signal = new AbortController().signal;
+      for (const window of ["visible", "hidden"]) {
+        assert.deepEqual(await run("explorer.exe", ["C:\\workspace"], signal, window), {
+          stdout: "done", stderr: "",
+        });
+      }
+      assert.deepEqual(observed.map(({ options }) => options.windowsHide), [false, true]);
+      assert.equal(observed[0].options.signal, signal);
+      assert.equal(observed[0].options.shell, undefined);
+      assert.deepEqual(observed[0].args, ["C:\\workspace"]);
+    });
+  }
+});
+
+test("native command visibility policy rejects changed runners and extra process launches", async () => {
+  const cases = [
+    { path: "node_modules/@deepseek-ai/example/lib/index.js" },
+    { path: "node_modules/@deepseek-ai/dsh-native-command/lib/other.js" },
+    { source: nativeCommandLaunchSource.replace("runNativeCommand =", "backgroundCommand =") },
+    { source: nativeCommandLaunchSource.replace("signal, window)", "signal, visibility)") },
+    { source: nativeCommandLaunchSource.replace('window === "hidden"', 'window !== "visible"') },
+    { source: nativeCommandLaunchSource.replace('window === "hidden"', "false") },
+    { source: nativeCommandLaunchSource.replace("env: externalCommandEnvironment()", "env: process.env") },
+    { source: nativeCommandLaunchSource.replace('encoding: "utf8",', 'encoding: "utf8", shell: true,') },
+    { source: nativeCommandLaunchSource.replace("command, [...args]", "command, args") },
+    { source: `${nativeCommandLaunchSource}\nexecFile("helper.exe", [], {});\n` },
+    { source: nativeCommandLaunchSource.replace("  execFile(command", '  execFile("helper.exe", [], {});\n  execFile(command') },
+  ];
+  for (const entry of cases) {
+    await withProcessPolicyFixture({
+      launchRelativePath: entry.path ?? "node_modules/@deepseek-ai/dsh-native-command/lib/index.js",
+      launchSource: entry.source ?? nativeCommandLaunchSource,
+    }, async (runtimeRoot) => {
+      await assert.rejects(
+        verifyHarnessRuntimeProcessPolicy(runtimeRoot),
+        /execFile\(\) must set windowsHide: true/u,
+      );
+    });
   }
 });
 

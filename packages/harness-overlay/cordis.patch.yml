@@ -3,13 +3,6 @@
   # `name` asserts that composition; Cordis patches cannot replace a module.
   name: '@lencx/minke-model-runtime/dsh'
 
-# Enable DSH's existing opt-in entries; do not declare duplicate instances.
-- id: time-context
-  disabled: false
-
-- id: schedule
-  disabled: false
-
 # Minke feedback goes to its Issues page; native ratings stay in the local log.
 - id: session-telemetry-otel
   config:
@@ -29,6 +22,3 @@
       name: '@lencx/minke-harness-overlay'
       config:
         rootPath: !!js process.env.MINKE_HOST_ROOT
-
-- id: ui-schedule
-  disabled: false

@@ -47,7 +47,7 @@ function assertHarnessStagingOrder(stageSource) {
     '"install",\n        "--recursive",\n        "--frozen-lockfile"',
   );
   const clean = stageSource.search(
-    /await cleanHarnessSource\(harnessRoot\);/u,
+    /await runPnpm\(\["run", "clean"\], harnessRoot\);/u,
   );
   const build = stageSource.search(
     /await runPnpm\(\s*\["run", "build"\],\s*harnessRoot,\s*minkeHarnessClientBuildEnvironment\(process\.env\),?\s*\);/u,
@@ -512,7 +512,7 @@ test("Harness staging contract supports Windows line endings", async () => {
   assertHarnessStagingOrder(windowsSource);
 });
 
-test("Linux makers target the packaged executable with matching case", async () => {
+test("Forge preserves platform executable names and macOS microphone declarations", async () => {
   const forgeUrl = new URL("../forge.config.ts", import.meta.url);
   const { outputFiles } = buildSync({
     entryPoints: [fileURLToPath(forgeUrl)],
@@ -529,6 +529,14 @@ test("Linux makers target the packaged executable with matching case", async () 
   );
   const config = loaded.exports.default;
   assert.equal(config.packagerConfig.executableName, "Minke");
+  assert.ok(config.packagerConfig.extendInfo.NSMicrophoneUsageDescription.length > 0);
+  const plist = createRequire(require.resolve("@electron/osx-sign"))("plist");
+  for (const path of ["Minke.app", "Minke Helper.app", "Minke Helper (Renderer).app"]) {
+    const signing = config.packagerConfig.osxSign.optionsForFile(path);
+    const entitlements = plist.parse(await readFile(signing.entitlements, "utf8"));
+    assert.equal(entitlements["com.apple.security.device.audio-input"], true);
+    assert.equal(entitlements["com.apple.security.cs.allow-jit"], true);
+  }
   for (const name of ["rpm", "deb"]) {
     const maker = config.makers.find(candidate => candidate.name === name);
     assert.ok(maker, `${name} must be configured`);

@@ -1,7 +1,7 @@
 diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-documentpreview/lib/client.js b/node_modules/@deepseek-ai/dsh-client-ui-sidebar-documentpreview/lib/client.js
 --- a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-documentpreview/lib/client.js
 +++ b/node_modules/@deepseek-ai/dsh-client-ui-sidebar-documentpreview/lib/client.js
-@@ -6805,2 +6805,54 @@
+@@ -7203,2 +7203,54 @@
  		*/
 +        // Minke owns drafts; DSH owns rendering, resource reads and HTML isolation.
 +        function registerMinkeDocumentPreview(ctx) {
@@ -56,7 +56,7 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-documentpreview/lib
 +            ctx.effect(() => ctx.reflect.provide("minkeDocumentPreview", { Body }));
 +        }
  		function apply(ctx) {
-@@ -6863,2 +6915,3 @@
+@@ -7261,2 +7313,3 @@
  			apply$3(ctx);
 +			registerMinkeDocumentPreview(ctx);
  		}

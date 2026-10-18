@@ -3,17 +3,17 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export const inject = ["agents", "sessionTelemetry", "terminalController", "officeToPdf", "pluginInventory", "pluginManager", "webServer", "settings", "llm"];
+export const inject = ["agents", "connection", "typertGateway", "sessionTelemetry", "terminalController", "officeToPdf", "pluginInventory", "pluginManager", "webServer", "settings", "llm"];
 
 async function probeTerminal(ctx) {
   const cwd = await mkdtemp(join(tmpdir(), "minke-terminal-smoke-"));
   const abort = new AbortController();
   const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(15_000)]);
   const id = "smoke-terminal";
-  const attachment = "smoke-writer";
   const marker = randomUUID();
   let handle;
   let stream;
+  let peer;
   try {
     handle = await ctx.agents.create({
       sessionId: `terminal-smoke-${randomUUID()}`,
@@ -21,28 +21,41 @@ async function probeTerminal(ctx) {
       signal,
     });
     const { agent } = handle;
+    peer = ctx.connection.createPeer({ principal: { kind: "owner" }, interactions: "none" });
     const controller = ctx.terminalController;
     const created = await controller.create(agent, { id, cols: 80, rows: 24 }, signal);
     if (created.cwd !== cwd || created.state !== "running") throw new Error("DSH terminal did not start in its workspace");
-    stream = controller.follow(agent, id, attachment, signal)[Symbol.asyncIterator]();
+    let input;
+    const uplink = new ReadableStream({ start(controller) { input = controller; } });
+    const frames = await ctx.typertGateway.stream({
+      namespace: "terminal", method: "attach", args: { agentId: agent.id, id },
+      peer, signal, uplink,
+    });
+    stream = frames[Symbol.asyncIterator]();
     const first = await stream.next();
-    if (first.done || first.value.type !== "snapshot") throw new Error("DSH terminal did not provide its initial screen");
-    await controller.resize(agent, id, attachment, 100, 30);
-    await controller.write(agent, id, attachment, `echo ${marker} > terminal-smoke.txt\rexit\r`);
+    if (first.done || first.value.type !== "snapshot" || !first.value.writable) throw new Error("DSH terminal did not provide its writable initial screen");
+    input.enqueue({ type: "resize", sequence: 1, cols: 100, rows: 30 });
+    input.enqueue({ type: "write", sequence: 2, data: `echo ${marker} > terminal-smoke.txt\rexit\r` });
     let info;
+    const acknowledged = new Set();
     while (true) {
       const frame = await stream.next();
       if (frame.done) break;
       if (frame.value.type === "state" && frame.value.info.state === "exited") {
         info = frame.value.info;
-        break;
       }
+      if (frame.value.type === "ack") {
+        if (frame.value.refusal !== undefined) throw new Error(`DSH terminal refused input: ${frame.value.refusal}`);
+        acknowledged.add(frame.value.sequence);
+      }
+      if (info !== undefined && acknowledged.has(1) && acknowledged.has(2)) break;
     }
     const bytes = await readFile(join(cwd, "terminal-smoke.txt"));
     // Windows PowerShell 5 writes UTF-16LE; cmd and other shells write UTF-8 here.
     const output = bytes[0] === 0xff && bytes[1] === 0xfe
       ? bytes.subarray(2).toString("utf16le") : bytes.toString("utf8");
-    if (output.trim() !== marker || info?.exitCode !== 0 || info.cols !== 100 || info.rows !== 30) {
+    if (output.trim() !== marker || info?.exitCode !== 0 || info.cols !== 100 || info.rows !== 30
+      || !acknowledged.has(1) || !acknowledged.has(2)) {
       throw new Error(`DSH terminal command, resize or exit failed: ${JSON.stringify({ output, info })}`);
     }
     await controller.close(agent, id);
@@ -53,7 +66,7 @@ async function probeTerminal(ctx) {
     try {
       await stream?.return?.();
     } finally {
-      try { await handle?.dispose(); }
+      try { await peer?.dispose(); await handle?.dispose(); }
       finally { await rm(cwd, { recursive: true, force: true }); }
     }
   }
@@ -118,6 +131,20 @@ export function apply(ctx) {
       const bundles = await ctx.pluginManager.listBundles();
       response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
       response.end(JSON.stringify({ change, bundles }));
+    },
+  });
+  ctx.webServer.register({
+    kind: "exact",
+    path: "/smoke/automation-tasks",
+    async handler(request, response) {
+      if (request.method !== "GET") {
+        response.writeHead(405, { allow: "GET" });
+        response.end();
+        return;
+      }
+      const inventory = await ctx.pluginInventory.list();
+      response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      response.end(JSON.stringify({ inventory }));
     },
   });
   ctx.webServer.register({

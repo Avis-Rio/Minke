@@ -297,13 +297,6 @@ export async function verifyPackagedApplication(
         `${options.platform}-${options.arch}`,
         "spawn-helper",
       ),
-      join(
-        appResources,
-        "app.asar.unpacked",
-        "node_modules",
-        "sys",
-        "lencx_mb.node",
-      ),
     );
   } else if (options.platform === "win32") {
     const targetRoot = join(

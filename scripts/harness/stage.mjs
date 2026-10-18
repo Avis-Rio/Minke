@@ -6,7 +6,6 @@ import { createRequire } from "node:module";
 import {
   chmod,
   cp,
-  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -15,7 +14,6 @@ import {
   realpath,
   rm,
   stat,
-  symlink,
 } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,7 +27,6 @@ import {
 import {
   minkeHarnessClientBuildEnvironment,
 } from "./client-build-environment.mjs";
-import { cleanHarnessSource } from "./clean-source.mjs";
 import { writeDeployLockfile } from "./deploy-lockfile.mjs";
 import {
   inspectHarnessClientCryptoBoundary,
@@ -76,14 +73,15 @@ const runtimeFingerprintPaths = [
   "config/harness-runtime.json",
   "config/embedded-node-runtime.mts",
   "scripts/harness/build-product-packages.mjs",
+  "scripts/harness/product-build-cache.mjs",
   "scripts/harness/client-build-environment.mjs",
-  "scripts/harness/clean-source.mjs",
   "scripts/harness/deploy-lockfile.mjs",
   "scripts/harness/client-crypto-boundary.mjs",
   "scripts/harness/command-invocation.mjs",
   "scripts/harness/contract.mjs",
   "scripts/harness/pnpm-invocation.mjs",
   "scripts/harness/runtime-entry.mjs",
+  "scripts/harness/desktop-host.mjs",
   "scripts/harness/runtime-adapters.mjs",
   "scripts/harness/runtime-patches.mjs",
   "scripts/harness/runtime-process-policy.mjs",
@@ -372,55 +370,6 @@ function collectRuntimeClosure(
   return [...selected].sort();
 }
 
-async function ensureReact18TypeIsolation(harnessRoot) {
-  const links = [
-    {
-      name: "react",
-      source: join(
-        harnessRoot,
-        "packages",
-        "client",
-        "ui-conversation",
-        "node_modules",
-        "@types",
-        "react",
-      ),
-    },
-    {
-      name: "react-dom",
-      source: join(
-        harnessRoot,
-        "packages",
-        "client",
-        "ui-primitives",
-        "node_modules",
-        "@types",
-        "react-dom",
-      ),
-    },
-  ];
-  const targetRoot = join(harnessRoot, "node_modules", "@types");
-  await mkdir(targetRoot, { recursive: true });
-  for (const link of links) {
-    if (!existsSync(link.source)) {
-      throw new Error(
-        `Harness build dependency is missing at ${link.source}; run without --skip-install`,
-      );
-    }
-    const source = await realpath(link.source);
-    const target = join(targetRoot, link.name);
-    if (existsSync(target)) {
-      const info = await lstat(target);
-      if (!info.isSymbolicLink()) {
-        throw new Error(`cannot isolate Harness React types: ${target} is not a symlink`);
-      }
-      if ((await realpath(target)) === source) continue;
-      await rm(target);
-    }
-    await symlink(source, target, "dir");
-  }
-}
-
 async function writeDeployRoot(
   generatedPackageDir,
   selectedPackages,
@@ -446,6 +395,7 @@ async function writeDeployRoot(
     join(generatedPackageDir, "index.mjs"),
     runtimeEntrySource(contract.packageName),
   );
+  await cp(join(projectRoot, "scripts/harness/desktop-host.mjs"), join(generatedPackageDir, "desktop-host.mjs"));
   return manifest;
 }
 
@@ -690,9 +640,11 @@ async function validateRuntime(
   productBundle,
   { commit, coreFingerprint, productBundleFingerprint, runtimeSize },
   runtimePatches,
+  { coreValidated = false } = {},
 ) {
   const required = [
     join(runtimeRoot, "index.mjs"),
+    join(runtimeRoot, "desktop-host.mjs"),
     join(
       runtimeRoot,
       "node_modules",
@@ -751,13 +703,12 @@ async function validateRuntime(
       throw new Error(`staged Harness runtime is incomplete: ${path} is missing`);
     }
   }
-  await verifyHarnessRuntimePatchesApplied(runtimeRoot, runtimePatches);
-  await verifyHarnessRuntimeProcessPolicy(runtimeRoot);
-  await verifyRuntimeNativeModules(runtimeRoot);
-  await inspectHarnessClientCryptoBoundary(
-    runtimeRoot,
-    contract.frontendPackageName,
-  );
+  if (!coreValidated) {
+    await verifyHarnessRuntimePatchesApplied(runtimeRoot, runtimePatches);
+    await verifyHarnessRuntimeProcessPolicy(runtimeRoot);
+    await verifyRuntimeNativeModules(runtimeRoot);
+    await inspectHarnessClientCryptoBoundary(runtimeRoot, contract.frontendPackageName);
+  }
   const installedProductBundleFingerprint = await fingerprintProductBundle(
     installedProductBundle(runtimeRoot, productBundle),
   );
@@ -857,6 +808,7 @@ async function validateReusableRuntime(
   }
   const required = [
     join(runtimeRoot, "index.mjs"),
+    join(runtimeRoot, "desktop-host.mjs"),
     join(
       runtimeRoot,
       "node_modules",
@@ -955,6 +907,7 @@ async function main() {
         "harness",
         "build-product-packages.mjs",
       ),
+      ...(flags.skipInstall && flags.skipBuild ? ["--if-stale"] : []),
     ],
     projectRoot,
   );
@@ -978,8 +931,17 @@ async function main() {
         coreFingerprint,
         runtimePatches,
       ),
+    productBundleFingerprint,
   );
-  if (stagePlan.mode === "reuse") {
+  if (stagePlan.mode === "unchanged") {
+    const installedFingerprint = await fingerprintProductBundle(installedProductBundle(activeRuntimeRoot, productBundle));
+    if (installedFingerprint === productBundleFingerprint) {
+      console.log("Harness runtime and product packages are unchanged; skipped refresh");
+      return;
+    }
+    console.log("Staged product packages differ from the build; repairing them");
+  }
+  if (stagePlan.mode === "reuse" || stagePlan.mode === "unchanged") {
     await injectProductPackages(
       activeRuntimeRoot,
       productBundle,
@@ -990,7 +952,6 @@ async function main() {
       contract,
       productBundle,
     );
-    await inspectPrunedRuntime(activeRuntimeRoot, contract);
     const expectedRuntime = {
       ...expectedRuntimeBase,
       runtimeSize: runtimeSizeContract(contract),
@@ -1007,6 +968,7 @@ async function main() {
       productBundle,
       expectedRuntime,
       runtimePatches,
+      { coreValidated: true },
     );
     console.log(
       `\nRefreshed ${productBundle.bundle.packageName} in ${relative(
@@ -1043,8 +1005,7 @@ async function main() {
     // those files, so stale output can make an otherwise clean pin fail with
     // missing exports. Harness's repository-owned cleaner preserves installed
     // dependencies and validates every deletion target before rebuilding.
-    await cleanHarnessSource(harnessRoot);
-    await ensureReact18TypeIsolation(harnessRoot);
+    await runPnpm(["run", "clean"], harnessRoot);
     await runPnpm(
       ["run", "build"],
       harnessRoot,
@@ -1122,6 +1083,7 @@ async function main() {
       join(candidateRuntimeRoot, "index.mjs"),
       runtimeEntrySource(contract.packageName),
     );
+    await cp(join(projectRoot, "scripts/harness/desktop-host.mjs"), join(candidateRuntimeRoot, "desktop-host.mjs"));
     await pruneNodePtyPrebuilds(candidateRuntimeRoot);
     const pruneReport = await pruneRuntimeArtifacts(candidateRuntimeRoot);
     const runtimeInspection = await inspectPrunedRuntime(

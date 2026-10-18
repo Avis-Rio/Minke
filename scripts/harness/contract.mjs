@@ -183,11 +183,18 @@ async function verifyWebAccessContract(harnessRoot) {
     "- id: tool-web\n  disabled: true",
     "Harness Web bundle no longer disables the host web tools before composing Agent Presets.",
   );
-  requireSourceSeam(
-    webRuntimeSource,
-    "this.searchProviderId = config.searchProvider ?? process.env.DSH_WEB_SEARCH_PROVIDER",
-    "Harness web search-provider selection changed; review Minke's explicit provider route.",
-  );
+  for (const capability of ["search", "fetch"]) {
+    for (const fragment of [
+      `this.${capability}ProviderEnv = process.env.DSH_WEB_${capability.toUpperCase()}_PROVIDER`,
+      `const configuredId = this.config.${capability}Provider.get() ?? this.${capability}ProviderEnv`,
+    ]) {
+      requireSourceSeam(
+        webRuntimeSource,
+        fragment,
+        `Harness web ${capability}-provider selection changed; review native live settings and environment precedence.`,
+      );
+    }
+  }
   requireSourceSeam(
     webRuntimeSource,
     "const result = await provider.search(request, signal)",
@@ -437,18 +444,6 @@ async function verifyProductBundle(projectRoot, harnessRoot, contract) {
   );
   for (const [fragment, message] of [
     [
-      "- id: time-context\n  disabled: false",
-      `${bundle.patch} must enable native time-context before Schedule.`,
-    ],
-    [
-      "- id: schedule\n  disabled: false",
-      `${bundle.patch} must enable the native durable Schedule runtime.`,
-    ],
-    [
-      "- id: ui-schedule\n  disabled: false",
-      `${bundle.patch} must enable the native Schedule conversation-header catalog.`,
-    ],
-    [
       "- id: minke-web-search\n      name: '@lencx/minke-harness-overlay/web-search'",
       `${bundle.patch} must compose minke_web_search as an independent tool.`,
     ],
@@ -458,6 +453,13 @@ async function verifyProductBundle(projectRoot, harnessRoot, contract) {
     ],
   ]) {
     requireSourceSeam(patchSource, fragment, message);
+  }
+  for (const pluginId of ["time-context", "schedule", "ui-schedule"]) {
+    forbidPluginRow(
+      patchSource,
+      pluginId,
+      `${bundle.patch} must leave ${pluginId} to the native Web composition and Agent Presets.`,
+    );
   }
   forbidPluginRow(
     patchSource,
@@ -917,11 +919,18 @@ export async function verifyHarnessContract(projectRoot) {
     ),
   ]);
 
-  requireSourceSeam(
-    pluginSource,
-    "runPluginCommand({ profile, installAnchor: INSTALL_ANCHOR, cwd: process.cwd() }, args, {",
-    "Harness dynamic plugin installer changed; review the desktop pnpm adapter.",
-  );
+  for (const seam of [
+    "const context = { profile, dir, installAnchor: INSTALL_ANCHOR, cwd: process.cwd() }",
+    "...packageManager,",
+    "execution: 'cli',",
+    "await runPluginCommand(context, args, options)",
+  ]) {
+    requireSourceSeam(
+      pluginSource,
+      seam,
+      "Harness dynamic plugin installer changed; review the desktop pnpm adapter.",
+    );
+  }
   requireSourceSeam(
     argsSource,
     ".option('--patch <path>'",

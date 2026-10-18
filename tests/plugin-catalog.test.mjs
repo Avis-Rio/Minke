@@ -22,7 +22,6 @@ import { PluginsView } from "@minke/harness-overlay/client/tabs/plugins/PluginsV
 import { createPluginTabRenderer } from "@minke/harness-overlay/client/tabs/plugins/renderer.tsx";
 import { pluginsEn, pluginsZh } from "@minke/harness-overlay/client/tabs/plugins/locales.ts";
 import { PLUGIN_DISCOVERY_TOPIC_URL, createPluginSearchUrl, readPluginSearchQuery, removeInsertedWebviewCssSafely } from "@minke/harness-overlay/client/tabs/plugins/resources.ts";
-import { WEB_GUEST_PREFERENCES, configureWebGuest } from "@minke/harness-overlay/client/tabs/web/guest.ts";
 import { WebTabsController } from "@minke/harness-overlay/client/tabs/web/controller.ts";
 import { webTabsEn } from "@minke/harness-overlay/client/tabs/web/locales.ts";
 import { TabsRuntime } from "@minke/harness-overlay/client/tabs/runtime.ts";
@@ -127,40 +126,6 @@ test("plugin webview CSS cleanup contains synchronous Electron failures", () => 
       ["compact"],
     );
   });
-});
-
-test("plugin discovery webviews receive one explicit security contract", () => {
-  const attributes = new Map();
-  const view = {
-    className: "",
-    setAttribute(name, value) {
-      attributes.set(name, value);
-    },
-  };
-  configureWebGuest(view, {
-    label: "Discover plugins",
-    url: PLUGIN_DISCOVERY_TOPIC_URL,
-    allowPopups: false,
-  });
-
-  assert.equal(view.className, "minke-tabs-view__guest");
-  assert.deepEqual(Object.fromEntries(attributes), {
-    "aria-label": "Discover plugins",
-    partition: "persist:minke-tabs-web",
-    src: PLUGIN_DISCOVERY_TOPIC_URL,
-    webpreferences: [
-      "contextIsolation=yes",
-      "nodeIntegration=no",
-      "sandbox=yes",
-      "webSecurity=yes",
-    ].join(","),
-  });
-  assert.deepEqual(WEB_GUEST_PREFERENCES, [
-    "contextIsolation=yes",
-    "nodeIntegration=no",
-    "sandbox=yes",
-    "webSecurity=yes",
-  ]);
 });
 
 test("legacy cleanup removes only the retired catalog cache", async () => {

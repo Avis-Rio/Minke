@@ -156,19 +156,6 @@ async function withPackagedApp(platform, callback) {
       ),
       ...nativeAssets.map((path) => write(path)),
     ];
-    if (platform === "darwin") {
-      required.push(
-        write(
-          join(
-            resourcesRoot,
-            "app.asar.unpacked",
-            "node_modules",
-            "sys",
-            "lencx_mb.node",
-          ),
-        ),
-      );
-    }
     await Promise.all(required);
     await callback({
       appRoot,

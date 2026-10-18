@@ -61,10 +61,6 @@ function writeContract(projectRoot, commit, additions = {}) {
 
 function productPatch(additionalRows = []) {
   return [
-    "- id: time-context",
-    "  disabled: false",
-    "- id: schedule",
-    "  disabled: false",
     "- insert:",
     "    - id: minke-web-search",
     "      name: '@lencx/minke-harness-overlay/web-search'",
@@ -74,8 +70,6 @@ function productPatch(additionalRows = []) {
     ...additionalRows,
     "    - id: minke-overlay",
     "      name: '@lencx/minke-harness-overlay'",
-    "- id: ui-schedule",
-    "  disabled: false",
     "",
   ].join("\n");
 }
@@ -99,7 +93,13 @@ function fixture(options = {}) {
     "apps/web/package.json",
     '{"name":"@deepseek-ai/dsh-web-frontend"}\n',
   );
-  write(harnessRoot, "apps/cli/src/plugin.ts", "runPluginCommand({ profile, installAnchor: INSTALL_ANCHOR, cwd: process.cwd() }, args, {\n");
+  write(harnessRoot, "apps/cli/src/plugin.ts", [
+    "const context = { profile, dir, installAnchor: INSTALL_ANCHOR, cwd: process.cwd() }",
+    ...(options.pluginPackageManager === false ? [] : ["...packageManager,"]),
+    "execution: 'cli',",
+    "await runPluginCommand(context, args, options)",
+    "",
+  ].join("\n"));
   write(
     harnessRoot,
     "apps/cli/src/args.ts",
@@ -419,7 +419,12 @@ function fixture(options = {}) {
     harnessRoot,
     "packages/web/web/src/index.ts",
     [
-      "this.searchProviderId = config.searchProvider ?? process.env.DSH_WEB_SEARCH_PROVIDER",
+      ...["search", "fetch"].flatMap((capability) => [
+        `this.${capability}ProviderEnv = process.env.DSH_WEB_${capability.toUpperCase()}_PROVIDER`,
+        ...(options.webLiveProviderSelection === capability ? [] : [
+          `const configuredId = this.config.${capability}Provider.get() ?? this.${capability}ProviderEnv`,
+        ]),
+      ]),
       "const result = await provider.search(request, signal)",
       ...(options.webSearchRegistration === false
         ? []
@@ -878,6 +883,21 @@ test("the product bundle cannot duplicate native web tools", async () => {
   );
 });
 
+test("the product bundle leaves Schedule rows to the native Web composition and Agent Presets", async () => {
+  for (const id of ["time-context", "schedule", "ui-schedule"]) {
+    const { projectRoot } = fixture();
+    write(
+      projectRoot,
+      "packages/harness-overlay/cordis.patch.yml",
+      `${productPatch()}- id: ${id}\n  disabled: false\n`,
+    );
+    await assert.rejects(
+      verifyHarnessContract(projectRoot),
+      /must leave .* to the native Web composition and Agent Presets/u,
+    );
+  }
+});
+
 test("the Harness contract requires the SSRF-safe web_fetch transport", async () => {
   for (const [options, expected] of [
     [
@@ -951,6 +971,16 @@ test("the Harness contract requires web search-provider registration", async () 
   );
 });
 
+test("the Harness contract requires live native web provider selection", async () => {
+  for (const capability of ["search", "fetch"]) {
+    const { projectRoot } = fixture({ webLiveProviderSelection: capability });
+    await assert.rejects(
+      verifyHarnessContract(projectRoot),
+      new RegExp(`web ${capability}-provider selection changed`, "u"),
+    );
+  }
+});
+
 test("the Harness contract gates authoritative Data Home formats", async () => {
   for (const [
     options,
@@ -1017,6 +1047,14 @@ test("the Harness contract rejects tracked source modifications", async () => {
   await assert.rejects(
     verifyHarnessContract(projectRoot),
     /apps\/cli\/src\/plugin\.ts/u,
+  );
+});
+
+test("the Harness contract requires installation-owned plugin package management", async () => {
+  const { projectRoot } = fixture({ pluginPackageManager: false });
+  await assert.rejects(
+    verifyHarnessContract(projectRoot),
+    /dynamic plugin installer changed/u,
   );
 });
 

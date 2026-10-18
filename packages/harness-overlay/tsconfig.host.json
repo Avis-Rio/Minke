@@ -6,9 +6,14 @@
     "rootDir": "src",
     "tsBuildInfoFile": "./lib/tsconfig.host.tsbuildinfo",
     "paths": {
-      "@minke/harness-overlay/*": ["./src/*"],
+      "@minke/harness-overlay/*": [
+        "./src/*"
+      ],
       "@deepseek-ai/dsh-llm": [
         "../../vendor/deepseek-harness/packages/llm/llm/src/index.ts"
+      ],
+      "@deepseek-ai/cordis": [
+        "../../vendor/deepseek-harness/vendor/cordis/src/index.ts"
       ]
     }
   },
@@ -27,6 +32,9 @@
   "references": [
     {
       "path": "../../vendor/deepseek-harness/packages/llm/llm"
+    },
+    {
+      "path": "../../vendor/deepseek-harness/vendor/cordis"
     }
   ]
 }

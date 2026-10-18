@@ -52,6 +52,7 @@ export function parseStageFlags(argv) {
 export async function chooseStagePlan(
   flags,
   validateReusable,
+  productBundleFingerprint,
 ) {
   if (!(flags.skipInstall && flags.skipBuild)) {
     return Object.freeze({
@@ -61,9 +62,11 @@ export async function chooseStagePlan(
     });
   }
   try {
-    await validateReusable();
+    const metadata = await validateReusable();
     return Object.freeze({
-      mode: "reuse",
+      mode: productBundleFingerprint !== undefined &&
+        metadata?.productBundle?.fingerprint === productBundleFingerprint
+        ? "unchanged" : "reuse",
       skipBuild: true,
       skipInstall: true,
     });

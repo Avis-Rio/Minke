@@ -1,7 +1,7 @@
 diff --git a/node_modules/@deepseek-ai/dsh-client-connection/lib/index.js b/node_modules/@deepseek-ai/dsh-client-connection/lib/index.js
 --- a/node_modules/@deepseek-ai/dsh-client-connection/lib/index.js
 +++ b/node_modules/@deepseek-ai/dsh-client-connection/lib/index.js
-@@ -538,2 +538,9 @@
+@@ -722,2 +722,9 @@
  	}
 +	/** Atomically replace the deployment authorities used by live routes. */
 +	replaceTrustedHosts(trustedHosts) {
@@ -11,7 +11,7 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-connection/lib/index.js b/node
 +		);
 +	}
  	/** Generic channel registry scoped to the Context reading this service. */
-@@ -751,3 +758,3 @@
+@@ -1028,3 +1035,3 @@
  	const recovery = resolveConnectionConfig(config?.recovery);
 -	const trustedHosts = config?.trustedHosts ?? [];
 +	const trustedHosts = [...(config?.trustedHosts ?? [])];

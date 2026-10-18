@@ -25,7 +25,7 @@ async function fixture(t) {
     await writeFile(join(path, "index.js"), name === "core" ? "export default 42;" : "export { default } from 'core';");
   }
   await mkdir(generated, { recursive: true });
-  await writeFile(join(root, "package.json"), JSON.stringify({ private: true, packageManager: "pnpm@11.7.0" }));
+  await writeFile(join(root, "package.json"), JSON.stringify({ private: true, packageManager: "pnpm@11.28.5" }));
   await writeFile(join(root, "pnpm-workspace.yaml"), yaml.dump({ packages: ["packages/*", "apps/*"] }));
   const original = yaml.dump({ lockfileVersion: "9.0", settings: { autoInstallPeers: true, excludeLinksFromLockfile: false }, importers: {
     ".": {}, "packages/core": {}, "packages/widget": { dependencies: { core: { specifier: "workspace:*", version: "link:../core" } } },

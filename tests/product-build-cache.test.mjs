@@ -1,0 +1,30 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { recordProductBuild, reusableProductBuild } from "../scripts/harness/product-build-cache.mjs";
+
+test("product cache invalidates on source, output and environment changes", async t => {
+  const root = await mkdtemp(join(tmpdir(), "minke-build-cache-"));
+  t.after(() => rm(root, { force: true, recursive: true }));
+  const cache = join(root, "cache.json"), env = { nodeEnv: "production" };
+  const reuse = () => reusableProductBuild(root, cache, env, ["output.js"]);
+  assert.equal(await reuse(), false);
+  await writeFile(join(root, "source.ts"), "first");
+  await writeFile(join(root, "output.js"), "built");
+  await recordProductBuild(root, cache, env, ["source.ts"], ["output.js"]);
+  assert.equal(await reuse(), true);
+  assert.equal(await reusableProductBuild(root, cache, { nodeEnv: "development" }, ["output.js"]), false);
+  await writeFile(join(root, "source.ts"), "second");
+  assert.equal(await reuse(), false);
+  await writeFile(join(root, "source.ts"), "first");
+  await writeFile(join(root, "output.js"), "damaged");
+  assert.equal(await reuse(), false);
+  await rm(join(root, "output.js"));
+  assert.equal(await reuse(), false);
+  await writeFile(cache, "broken");
+  assert.equal(await reuse(), false);
+  await writeFile(cache, "null");
+  assert.equal(await reuse(), false);
+});

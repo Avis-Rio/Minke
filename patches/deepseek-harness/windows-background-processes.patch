@@ -1,32 +1,32 @@
 diff --git a/node_modules/@deepseek-ai/dsh-experimental-ptc-runtime-python/lib/index.js b/node_modules/@deepseek-ai/dsh-experimental-ptc-runtime-python/lib/index.js
 --- a/node_modules/@deepseek-ai/dsh-experimental-ptc-runtime-python/lib/index.js
 +++ b/node_modules/@deepseek-ai/dsh-experimental-ptc-runtime-python/lib/index.js
-@@ -845,3 +845,4 @@
+@@ -808,3 +808,4 @@
  			killSignal: "SIGKILL",
 -			maxBuffer: 1024
 +			maxBuffer: 1024,
 +			windowsHide: true
  		}).trim();
-@@ -1216,2 +1217,3 @@
+@@ -1257,2 +1258,3 @@
  				detached: true,
 +				windowsHide: true,
  				stdio: [
 diff --git a/node_modules/@deepseek-ai/dsh-sandbox-local/lib/index.js b/node_modules/@deepseek-ai/dsh-sandbox-local/lib/index.js
 --- a/node_modules/@deepseek-ai/dsh-sandbox-local/lib/index.js
 +++ b/node_modules/@deepseek-ai/dsh-sandbox-local/lib/index.js
-@@ -109,3 +109,4 @@
+@@ -110,3 +110,4 @@
  		timeout: timeoutMs,
 -		stdio: "ignore"
 +		stdio: "ignore",
 +		windowsHide: true
  	}).status === 0;
-@@ -131,3 +132,4 @@
+@@ -132,3 +133,4 @@
  		timeout: timeoutMs,
 -		stdio: "ignore"
 +		stdio: "ignore",
 +		windowsHide: true
  	}).status === 0;
-@@ -144,3 +146,21 @@
+@@ -145,3 +147,21 @@
  	if (program === void 0) return false;
 +	const bootstrap = process.env.MINKE_NODE_BOOTSTRAP;
 +	const embeddedExecutable = process.env.MINKE_NODE_EXECUTABLE;
@@ -48,7 +48,7 @@ diff --git a/node_modules/@deepseek-ai/dsh-sandbox-local/lib/index.js b/node_mod
  	return spawnSync(program, [
 +		...bootstrapArgs,
  		...runnerInvocation.slice(1),
-@@ -159,3 +179,5 @@
+@@ -160,3 +180,5 @@
  		timeout: timeoutMs,
 -		stdio: "ignore"
 +		stdio: "ignore",
@@ -58,49 +58,49 @@ diff --git a/node_modules/@deepseek-ai/dsh-sandbox-local/lib/index.js b/node_mod
 diff --git a/node_modules/@deepseek-ai/dsh-subprocess-local/lib/index.js b/node_modules/@deepseek-ai/dsh-subprocess-local/lib/index.js
 --- a/node_modules/@deepseek-ai/dsh-subprocess-local/lib/index.js
 +++ b/node_modules/@deepseek-ai/dsh-subprocess-local/lib/index.js
-@@ -35,3 +35,4 @@
+@@ -40,3 +40,4 @@
  			env: managerEnvironment(),
 -			timeout: SYSTEMCTL_TIMEOUT_MS
 +			timeout: SYSTEMCTL_TIMEOUT_MS,
 +			windowsHide: true
  		}, (error, stdout, stderr) => {
-@@ -91,3 +92,4 @@
+@@ -102,3 +103,4 @@
+ 			],
+-			timeout: SYSTEMCTL_TIMEOUT_MS
++			timeout: SYSTEMCTL_TIMEOUT_MS,
++			windowsHide: true
+ 		});
+@@ -136,3 +138,4 @@
  		stdio: "ignore",
 -		timeout: SYSTEMCTL_TIMEOUT_MS
 +		timeout: SYSTEMCTL_TIMEOUT_MS,
 +		windowsHide: true
  	});
-@@ -109,3 +111,4 @@
- 		stdio: "ignore",
--		timeout: SYSTEMCTL_TIMEOUT_MS
-+		timeout: SYSTEMCTL_TIMEOUT_MS,
-+		windowsHide: true
- 	});
-@@ -172,3 +175,4 @@
+@@ -255,3 +258,4 @@
  			env: managerEnvironment(),
 -			timeout: SYSTEMCTL_TIMEOUT_MS
 +			timeout: SYSTEMCTL_TIMEOUT_MS,
 +			windowsHide: true
  		});
-@@ -195,3 +199,4 @@
+@@ -278,3 +282,4 @@
  			env: managerEnvironment(),
 -			timeout: SYSTEMCTL_TIMEOUT_MS
 +			timeout: SYSTEMCTL_TIMEOUT_MS,
 +			windowsHide: true
  		});
-@@ -229,3 +234,4 @@
+@@ -312,3 +317,4 @@
  				stdio: "ignore",
 -				timeout: SYSTEMCTL_TIMEOUT_MS
 +				timeout: SYSTEMCTL_TIMEOUT_MS,
 +				windowsHide: true
  			});
-@@ -264,3 +270,4 @@
+@@ -347,3 +353,4 @@
  				stdio: "ignore",
 -				timeout: SYSTEMCTL_TIMEOUT_MS
 +				timeout: SYSTEMCTL_TIMEOUT_MS,
 +				windowsHide: true
  			});
-@@ -492,2 +499,3 @@
+@@ -577,2 +584,3 @@
  			stdio: runnerStdio(spec, false),
 +			windowsHide: true,
  			detached: true
@@ -112,7 +112,7 @@ diff --git a/node_modules/@deepseek-ai/dsh-subprocess-local/lib/runner-launch-B2
 -	exec: (file, args) => execFileSync(file, args, { encoding: "utf8" }),
 +	exec: (file, args) => execFileSync(file, args, { encoding: "utf8", windowsHide: true }),
  	kill: (pid, signal) => process.kill(pid, signal)
-@@ -1033,3 +1033,3 @@
+@@ -1037,3 +1037,3 @@
  		detached: platform !== "win32",
 -		windowsHide: platform === "win32"
 +		windowsHide: true
@@ -120,12 +120,12 @@ diff --git a/node_modules/@deepseek-ai/dsh-subprocess-local/lib/runner-launch-B2
 diff --git a/node_modules/@deepseek-ai/dsh-web-app/lib/index.js b/node_modules/@deepseek-ai/dsh-web-app/lib/index.js
 --- a/node_modules/@deepseek-ai/dsh-web-app/lib/index.js
 +++ b/node_modules/@deepseek-ai/dsh-web-app/lib/index.js
-@@ -124,3 +124,3 @@
+@@ -91,3 +91,3 @@
  	], {
 -		env: scrubbedParentEnv(),
 +		env: browserWorkerEnvironment(),
  		stdio: [
-@@ -129,3 +129,4 @@
+@@ -96,3 +96,4 @@
  			"pipe"
 -		]
 +		],

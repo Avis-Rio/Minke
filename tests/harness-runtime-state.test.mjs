@@ -150,6 +150,14 @@ test("refresh-if-stale is valid only for the complete fast-stage mode", () => {
   );
 });
 
+test("fast staging distinguishes unchanged product output from a product refresh", async () => {
+  const flags = parseStageFlags(["--skip-install", "--skip-build"]);
+  const validate = async () => ({ productBundle: { fingerprint: "same" } });
+  assert.equal((await chooseStagePlan(flags, validate, "same")).mode, "unchanged");
+  assert.equal((await chooseStagePlan(flags, validate, "changed")).mode, "reuse");
+  assert.equal((await chooseStagePlan(parseStageFlags([]), validate, "same")).mode, "full");
+});
+
 test("runtime publication replaces a validated candidate", async () => {
   await withTemporaryDirectory(async (root) => {
     const destination = join(root, "host");

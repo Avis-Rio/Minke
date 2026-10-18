@@ -1,7 +1,7 @@
 diff --git a/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js b/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js
 --- a/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js
 +++ b/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js
-@@ -1482,3 +1482,4 @@
+@@ -1787,3 +1787,4 @@
  function internalModules() {
 -	const addon = createRequire(import.meta.url)("node-addon-require-builtin");
 +	const require = createRequire(import.meta.url);
@@ -10,7 +10,7 @@ diff --git a/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js b/node_modules/
 diff --git a/node_modules/@deepseek-ai/dsh-app-boot/lib/worker/profile-resolution-bootstrap.js b/node_modules/@deepseek-ai/dsh-app-boot/lib/worker/profile-resolution-bootstrap.js
 --- a/node_modules/@deepseek-ai/dsh-app-boot/lib/worker/profile-resolution-bootstrap.js
 +++ b/node_modules/@deepseek-ai/dsh-app-boot/lib/worker/profile-resolution-bootstrap.js
-@@ -451,3 +451,4 @@
+@@ -563,3 +563,4 @@
  function internalModules() {
 -	const addon = createRequire(import.meta.url)("node-addon-require-builtin");
 +	const require = createRequire(import.meta.url);

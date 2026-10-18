@@ -15,7 +15,7 @@
   },
   "private": true,
   "version": "0.8.0",
-  "packageManager": "pnpm@11.7.0",
+  "packageManager": "pnpm@11.28.5",
   "main": ".vite/build/main.js",
   "scripts": {
     "icons:generate": "node scripts/forge/generate-icons.mjs",
@@ -30,12 +30,18 @@
     "test:desktop:host": "node scripts/tests/desktop.mjs host",
     "test:desktop:about-layout": "electron tests/about-update-layout-runtime.cjs",
     "test:desktop:agent-browser-runtime": "electron tests/agent-browser-runtime.cjs",
+    "test:desktop:browser-runtime": "pnpm run build:preload && node tests/browser-guests-runtime.cjs",
     "test:desktop:web-tab-links-runtime": "pnpm run build:preload && electron tests/web-tab-links-runtime.cjs",
     "test:desktop:agent-browser-conversation": "pnpm run build:preload && pnpm run harness:stage:ensure && pnpm run test:desktop:agent-browser-conversation:prepared",
     "test:desktop:agent-browser-conversation:prepared": "node scripts/tests/agent-browser-conversation.mjs",
     "test:desktop:sidebar": "pnpm run build:preload && pnpm run harness:stage:ensure && pnpm run test:desktop:sidebar:prepared",
     "test:desktop:sidebar:prepared": "node scripts/tests/agent-browser-conversation.mjs --sidebar",
     "test:desktop:runtime": "pnpm run build:preload && electron tests/macos-window-runtime.cjs",
+    "test:desktop:platform-runtime": "pnpm run build:preload && electron tests/desktop-platform-runtime.cjs",
+    "test:desktop:microphone": "electron tests/microphone-permission-runtime.cjs",
+    "test:desktop:recovery-runtime": "electron tests/desktop-recovery-runtime.cjs",
+    "test:desktop:context-menu-runtime": "electron tests/window-context-menu-runtime.cjs",
+    "test:desktop:session-export-runtime": "pnpm run build:preload && electron tests/session-export-runtime.cjs",
     "test:desktop:harness-navigation": "electron tests/harness-navigation-runtime.cjs",
     "test:sys": "node --test tests/sys-native-module.test.mjs",
     "harness:verify": "node scripts/harness/verify.mjs",
@@ -66,11 +72,11 @@
     "react-dom": "19.2.8",
     "ws": "8.21.3"
   },
-  "optionalDependencies": {
-    "sys": "workspace:*"
-  },
   "devDependencies": {
-    "@deepseek-ai/dsh-typert-protocol": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-shortcuts": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings-general": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar-browser": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.2",
     "@electron-forge/cli": "7.11.2",
     "@electron-forge/core": "7.11.2",
     "@electron-forge/maker-deb": "7.11.2",

@@ -412,6 +412,12 @@ async function withPatchedSubprocessLaunches(runtimeRoot, callback) {
     runtime.internals = { spillDir: runtimeRoot };
     runtime.live = new Set();
     runtime.terminalInspector = {};
+    // The rc.2 selector records this decision before either Linux launch path.
+    // These boundary tests choose the native path without probing this host.
+    runtime.linuxScopeDecision = {
+      kind: "scope", reason: "probe-available", literalArgv: ["--expand-environment=no"],
+      generation: 1, probe: "first",
+    };
     await callback(runtime, (capture) => {
       globalThis[launchKey] = capture;
     });
@@ -491,6 +497,7 @@ test("native subprocess runners preserve embedded Node launch boundaries", { tim
           } else {
             assert.throws(() => runtime.spawn(spec), (error) => error === captured);
             assert.equal(launch.command, "systemd-run");
+            assert.ok(launch.args.includes("--expand-environment=no"));
             assert.equal(hasEnvironmentName(launch.options.env, "ELECTRON_RUN_AS_NODE"), false);
             assert.equal(hasEnvironmentName(launch.options.env, "MINKE_NODE_BOOTSTRAP"), false);
             const scoped = launch.args.slice(launch.args.indexOf("--") + 1);
@@ -1060,6 +1067,8 @@ test("every process.execPath production seam remains classified", async () => {
     "scripts/harness/node-pty-probe.cjs",
     "scripts/harness/pnpm-invocation.mjs",
     "scripts/harness/runtime-adapters.mjs",
+    // Desktop Host explicitly supplies Electron + bundled pnpm to runProfile.
+    "scripts/harness/runtime-entry.mjs",
     "scripts/harness/smoke.mjs",
     "scripts/harness/stage.mjs",
   ]);
@@ -1088,20 +1097,25 @@ test("every process.execPath production seam remains classified", async () => {
       "vendor/deepseek-harness/apps/desktop/scripts/installed-update-signature.mjs",
       "vendor/deepseek-harness/apps/desktop/scripts/package-target.ts",
       "vendor/deepseek-harness/apps/desktop/scripts/test-host-updates.ts",
-      "vendor/deepseek-harness/packages/experimental/webworker-packer/src/repository.ts",
     ],
     executableSidecarResolution: [
       "vendor/deepseek-harness/packages/fs/tool-fs-search/src/search-core.ts",
     ],
     managedHarnessRuntime: [
       // The upstream desktop app is not part of Minke's runtime closure.
+      "vendor/deepseek-harness/apps/desktop-host/src/cli.ts",
       "vendor/deepseek-harness/apps/desktop-host/src/index.ts",
       "vendor/deepseek-harness/apps/desktop/src/main.ts",
       "vendor/deepseek-harness/packages/sdk/client/src/launch.ts",
     ],
     remoteRuntimeMetadata: [
       // Reports the remote helper's own Node path; does not launch local Electron.
+      "vendor/deepseek-harness/packages/ssh/ssh/src/helper-entry.ts",
       "vendor/deepseek-harness/packages/ssh/ssh/src/helper.ts",
+    ],
+    standaloneSshSidecarResolution: [
+      // Runs only inside the packaged SSH helper and resolves its native assets.
+      "vendor/deepseek-harness/packages/ssh/ssh-helper-runtime/src/index.ts",
     ],
     patchedDesktopHelpers: [
       "vendor/deepseek-harness/packages/host/directory-picker-native/src/win32-dialog-host.ts",
@@ -1111,10 +1125,12 @@ test("every process.execPath production seam remains classified", async () => {
       // MCP's child_process spawn uses Minke's installed Node bootstrap.
       "vendor/deepseek-harness/packages/experimental/browser-use-chrome-devtools-mcp/src/index.ts",
       "vendor/deepseek-harness/packages/experimental/browser-use-playwright-mcp/src/index.ts",
+      // Optional mod timer delegates to the same managed subprocess provider.
+      "vendor/deepseek-harness/packages/experimental/claude-code-mods/examples/blast-radius/index.ts",
       // Speech uses the same subprocess provider and private Node bootstrap.
       "vendor/deepseek-harness/packages/experimental/speech-to-text-sensevoice/src/recognizer.ts",
       // PTC launches through the patched subprocess provider, including control FD 3.
-      "vendor/deepseek-harness/packages/ptc-runtime/ptc-runtime-node/src/index.ts",
+      "vendor/deepseek-harness/packages/ptc-runtime/ptc-runtime-node/src/launch.ts",
       "vendor/deepseek-harness/packages/sandbox/sandbox-local/src/index.ts",
       "vendor/deepseek-harness/packages/subagent/subagent-codex/src/run.ts",
       "vendor/deepseek-harness/packages/subprocess/subprocess-local/src/runner-launch.ts",

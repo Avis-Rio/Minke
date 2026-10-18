@@ -226,7 +226,7 @@ function hasNamedImport(ast, source, name) {
 }
 
 function catalogAppLaunch(ast, path) {
-  // Harness dsh-v0.1.7-rc.2 / 477b4f4205, packages/host/open-in-app/src/resolver.ts:
+  // Harness dsh-v0.2.1-rc.2 / 687f282e86, packages/host/open-in-app/src/resolver.ts:
   // launchDetachedApp owns user-selected GUI launches and retains each catalog
   // adapter's visibility. Its pinned vendor source must remain pristine; forcing
   // windowsHide would change that behavior. Minke's staging policy owns this
@@ -318,12 +318,83 @@ function catalogAppLaunch(ast, path) {
   return call;
 }
 
+function nativeCommandLaunch(ast, path) {
+  // Harness dsh-v0.2.1-rc.2 / 687f282e86, packages/util/native-command/src/runner.ts:
+  // Explorer needs visible startup; background callers explicitly choose hidden.
+  // Minke owns this exception for the pristine dependency. Re-evaluate it when
+  // the upstream runner changes; other calls in these artifacts stay audited.
+  const bundled = path === "node_modules/@deepseek-ai/dsh-native-command/lib/index.js";
+  if (!bundled && path !== "node_modules/@deepseek-ai/dsh-native-command/lib/types/runner.js") {
+    return undefined;
+  }
+  if (!hasNamedImport(ast, "node:child_process", "execFile")) return undefined;
+  const owners = ast.body.flatMap((statement) => {
+    const declaration = statement.type === "ExportNamedDeclaration"
+      ? statement.declaration
+      : statement;
+    return declaration?.type === "VariableDeclaration" && declaration.kind === "const"
+      ? declaration.declarations.filter((entry) => isIdentifier(entry.id, "runNativeCommand"))
+      : [];
+  });
+  if (owners.length !== 1) return undefined;
+  const owner = owners[0].init;
+  if (
+    owner?.type !== "ArrowFunctionExpression" || owner.async ||
+    owner.params.length !== 4 ||
+    !["command", "args", "signal", "window"].every((name, index) => isIdentifier(owner.params[index], name))
+  ) return undefined;
+  const promise = owner.body;
+  const executor = promise.arguments?.[0];
+  if (
+    promise.type !== "NewExpression" || !isIdentifier(promise.callee, "Promise") ||
+    promise.arguments.length !== 1 || executor?.type !== "ArrowFunctionExpression" ||
+    executor.async || executor.params.length !== 2 ||
+    !["resolve", "reject"].every((name, index) => isIdentifier(executor.params[index], name)) ||
+    executor.body.type !== "BlockStatement"
+  ) return undefined;
+  const statement = executor.body.body[0];
+  const call = statement?.expression;
+  if (
+    statement?.type !== "ExpressionStatement" || call?.type !== "CallExpression" ||
+    call.optional || !isIdentifier(call.callee, "execFile") ||
+    call.arguments.length !== 4 || !isIdentifier(call.arguments[0], "command")
+  ) return undefined;
+  const argv = call.arguments[1];
+  const options = call.arguments[2];
+  const optionNames = ["encoding", "signal", "windowsHide", ...(bundled ? ["env"] : [])];
+  if (
+    argv.type !== "ArrayExpression" || argv.elements.length !== 1 ||
+    argv.elements[0]?.type !== "SpreadElement" || !isIdentifier(argv.elements[0].argument, "args") ||
+    options.type !== "ObjectExpression" || options.properties.length !== optionNames.length ||
+    options.properties.some((property) =>
+      property.type !== "Property" || property.computed || property.method || property.kind !== "init",
+    ) ||
+    !optionNames.every((name) => namedObjectProperties(options, name).length === 1) ||
+    literalPropertyValue(options, "encoding") !== "utf8" ||
+    !isIdentifier(objectProperty(options, "signal").value, "signal")
+  ) return undefined;
+  const visibility = objectProperty(options, "windowsHide").value;
+  if (
+    visibility.type !== "BinaryExpression" || visibility.operator !== "===" ||
+    !isIdentifier(visibility.left, "window") ||
+    visibility.right.type !== "Literal" || visibility.right.value !== "hidden"
+  ) return undefined;
+  if (bundled) {
+    const env = objectProperty(options, "env").value;
+    if (
+      env.type !== "CallExpression" || env.optional || env.arguments.length !== 0 ||
+      !isIdentifier(env.callee, "externalCommandEnvironment")
+    ) return undefined;
+  }
+  return call;
+}
+
 function runtimePath(runtimeRoot, path) {
   return relative(runtimeRoot, path).split(sep).join("/");
 }
 
 async function libreOfficeBuildSources(firstPartyRoot) {
-  // libreoffice-kit 0.1.1 ships its engine rebuild sources alongside binaries
+  // libreoffice-kit 0.1.5 ships its engine rebuild sources alongside binaries
   // for source redistribution. prebuilds.json identifies those build inputs;
   // the converter executes lib/worker.js and bin/, not these source scripts.
   // Keep the pinned dependency pristine. Minke's staging policy owns this
@@ -336,7 +407,7 @@ async function libreOfficeBuildSources(firstPartyRoot) {
       !/^libreoffice-kit-(?:(?:darwin|win32)-(?:arm64|x64)|wasm)$/u.test(entry.name)) continue;
     const packageRoot = join(firstPartyRoot, entry.name);
     const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
-    if (manifest.name !== `@deepseek-ai/${entry.name}` || manifest.version !== "0.1.1") continue;
+    if (manifest.name !== `@deepseek-ai/${entry.name}` || manifest.version !== "0.1.5") continue;
     const prebuilds = JSON.parse(await readFile(join(packageRoot, "prebuilds.json"), "utf8"));
     for (const path of prebuilds.source?.files ?? []) {
       if (typeof path === "string" &&
@@ -790,6 +861,7 @@ export async function inspectHarnessRuntimeProcessPolicy(runtimeRoot) {
     const ast = parseRuntimeJavaScript(source, runtimePath(runtimeRoot, path));
     const bindings = collectChildProcessBindings(ast);
     const catalogLaunch = catalogAppLaunch(ast, runtimePath(runtimeRoot, path));
+    const nativeLaunch = nativeCommandLaunch(ast, runtimePath(runtimeRoot, path));
     const restricted = isRestrictedWindowsProcessPath(path)
       ? collectRestrictedLaunches(ast)
       : undefined;
@@ -804,7 +876,7 @@ export async function inspectHarnessRuntimeProcessPolicy(runtimeRoot) {
           line: node.loc.start.line,
         };
         launches.push(launch);
-        if (!hasExplicitHiddenWindow(node) && node !== catalogLaunch) {
+        if (!hasExplicitHiddenWindow(node) && node !== catalogLaunch && node !== nativeLaunch) {
           violations.push(
             `${launch.path}:${String(launch.line)} ${method}() must set windowsHide: true`,
           );

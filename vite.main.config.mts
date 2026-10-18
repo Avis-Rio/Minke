@@ -12,8 +12,5 @@ export default defineConfig({
   },
   build: {
     sourcemap: false,
-    rollupOptions: {
-      external: ["sys"],
-    },
   },
 });

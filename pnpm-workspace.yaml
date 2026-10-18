@@ -14,7 +14,10 @@ overrides:
   '@codemirror/view': 6.43.9
   yauzl: 3.4.0
   # Resolve Harness development dependencies from the pinned source checkout.
-  '@deepseek-ai/dsh-invariants': link:vendor/deepseek-harness/packages/runtime-diagnostics/invariants
+  '@deepseek-ai/dsh-client-shortcuts': link:vendor/deepseek-harness/packages/client/shortcuts
+  '@deepseek-ai/dsh-client-ui-primitives': link:vendor/deepseek-harness/packages/client/ui-primitives
+  '@deepseek-ai/dsh-client-ui-sidebar-browser': link:vendor/deepseek-harness/packages/client/ui-sidebar-browser
+  '@deepseek-ai/dsh-client-ui-settings-general': link:vendor/deepseek-harness/packages/client/ui-settings-general
   '@deepseek-ai/dsh-llm': link:vendor/deepseek-harness/packages/llm/llm
   '@deepseek-ai/dsh-typert-protocol': link:vendor/deepseek-harness/packages/typert/protocol
 
@@ -27,9 +30,9 @@ allowBuilds:
 
 minimumReleaseAgeExclude:
   - '@codemirror/view@6.43.9'
-  - '@deepseek-ai/cordis@4.0.4'
-  - '@deepseek-ai/cosmokit@1.8.5'
-  - '@deepseek-ai/schemastery@3.18.4'
+  - '@deepseek-ai/cordis@4.0.5'
+  - '@deepseek-ai/cosmokit@1.8.6'
+  - '@deepseek-ai/schemastery@3.18.5'
 
 patchedDependencies:
   '@electron-forge/core@7.11.2': patches/@electron-forge__core@7.11.2.patch

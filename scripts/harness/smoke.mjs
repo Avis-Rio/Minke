@@ -13,8 +13,10 @@ import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { embeddedNodeEnvironment } from "../../config/embedded-node-runtime.mts";
 import {
+  harnessHostArguments,
   readHarnessRuntimeLayout,
 } from "../../desktop/main/harness-launch.ts";
+import { HarnessHostChannel } from "../../desktop/main/harness-host-channel.ts";
 import { packagedApplicationLayout } from "../forge/application-layout.mjs";
 import {
   isCommandUnavailableResult,
@@ -328,21 +330,21 @@ async function callMinkeHost(server, endpoint, payload) {
   const rpcId =
     `minke-host-smoke-${String(Date.now())}-${String(++minkeHostRpcSequence)}`;
   const response = await server.fetch(
-    `${server.baseUrl}/minke/${endpoint}`,
+    `${server.baseUrl}/api/minke/${endpoint}`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         type: "client-request",
         rpcId,
-        method: endpoint,
-        payload,
+        method: `minke/${endpoint}`,
+        payload: { args: endpoint === "capabilities" ? {} : { request: payload } },
       }),
     },
   );
   if (!response.ok) {
     throw new Error(
-      `POST /minke/${endpoint} failed with HTTP ${String(response.status)}`,
+      `POST /api/minke/${endpoint} failed with HTTP ${String(response.status)}`,
     );
   }
   const envelope = await response.json();
@@ -369,7 +371,7 @@ async function fetchMinkeHostCapabilities(server) {
     {},
   );
   if (
-    capabilities?.protocolVersion !== 3 ||
+    capabilities?.protocolVersion !== 4 ||
     capabilities.files?.available !== true ||
     capabilities.files?.write !== true ||
     capabilities.tabs?.available !== true ||
@@ -380,6 +382,31 @@ async function fetchMinkeHostCapabilities(server) {
     );
   }
   return capabilities;
+}
+
+async function smokeMinkeApiTrust(server) {
+  const url = `${server.baseUrl}/api/minke/capabilities`;
+  const request = {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "client-request", rpcId: "minke-auth-smoke",
+      method: "minke/capabilities", payload: { args: {} } }),
+  };
+  const unauthenticated = await fetch(url, request);
+  if (unauthenticated.status !== 401) {
+    throw new Error(`Minke Remote API admitted an unauthenticated caller (${unauthenticated.status})`);
+  }
+  const foreignOrigin = await server.fetch(url, {
+    ...request, headers: { ...request.headers, origin: "https://untrusted.invalid" },
+  });
+  if (foreignOrigin.status !== 403) {
+    throw new Error(`Minke Remote API admitted a foreign Origin (${foreignOrigin.status})`);
+  }
+  const retired = await server.fetch(`${server.baseUrl}/minke/capabilities`, request);
+  // With no named route, DSH frontend-static rejects POST through its 405 fallback.
+  if (retired.status !== 405) {
+    throw new Error(`Retired Minke channel still responds (${retired.status})`);
+  }
 }
 
 async function smokeMinkePwa(server) {
@@ -448,6 +475,26 @@ async function smokeFeedbackPolicy(server) {
   }
 }
 
+async function smokeAutomationTasks(server) {
+  const modules = [
+    "@deepseek-ai/dsh-schedule",
+    "@deepseek-ai/dsh-client-ui-schedule",
+  ];
+  const response = await server.fetch(`${server.baseUrl}/smoke/automation-tasks`);
+  if (!response.ok) throw new Error(`Native automation tasks unavailable (${response.status})`);
+  const state = await response.json();
+  for (const moduleName of modules) {
+    const rows = state.inventory.entries.filter(row => row.moduleName === moduleName);
+    if (rows.length !== 1 || rows[0].fiberPhase !== "active") {
+      throw new Error(`Native automation tasks ${moduleName} must be active without enabling a bundle`);
+    }
+  }
+  const manifest = await fetchManifest(server);
+  if (!manifest.entries.some(row => row.id === "@deepseek-ai/dsh-client-ui-schedule")) {
+    throw new Error("Native automation tasks client is missing from the boot manifest");
+  }
+}
+
 async function waitForChangedRevision(server, pluginId, initialRevision) {
   const deadline = Date.now() + hmrTimeoutMs;
   while (Date.now() < deadline) {
@@ -474,106 +521,26 @@ async function waitForModelProvider(server, provider) {
   throw new Error(`native model settings did not publish ${provider}: ${JSON.stringify(state)}`);
 }
 
-async function startServer(
-  command,
-  args,
-  env,
-) {
-  const child = spawnCommand(
-    command,
-    args,
-    {
-      cwd: projectRoot,
-      detached: process.platform !== "win32",
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    },
-  );
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  let output = "";
-  let readinessOutput = "";
-  let settled = false;
-
-  const ready = new Promise((resolvePromise, reject) => {
-    const timeout = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      readinessOutput = "";
-      reject(
-        new Error(
-          `Harness did not become ready within ${String(startupTimeoutMs)} ms\n${output}`,
-        ),
-      );
-    }, startupTimeoutMs);
-    const consume = (chunk) => {
-      if (settled) {
-        output = redactLaunchTokens(
-          `${output}${chunk}`,
-        ).slice(-maxCapturedOutput);
-        return;
-      }
-      readinessOutput =
-        `${readinessOutput}${chunk}`.slice(-maxCapturedOutput);
-      output = redactLaunchTokens(readinessOutput);
-      const match =
-        /dsh web: (http:\/\/[^\s)]+)(?=\s|\))/u.exec(
-          readinessOutput,
-        );
-      if (match?.[1] === undefined || settled) return;
-      try {
-        const endpoint = parseAuthenticatedReadyUrl(match[1]);
-        settled = true;
-        readinessOutput = "";
-        clearTimeout(timeout);
-        resolvePromise(endpoint);
-      } catch (error) {
-        settled = true;
-        readinessOutput = "";
-        clearTimeout(timeout);
-        reject(error);
-      }
-    };
-    child.stdout.on("data", consume);
-    child.stderr.on("data", consume);
-    child.once("error", (error) => {
-      if (settled) return;
-      settled = true;
-      readinessOutput = "";
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.once("exit", (code, signal) => {
-      if (settled) return;
-      settled = true;
-      readinessOutput = "";
-      clearTimeout(timeout);
-      reject(
-        new Error(
-          `Harness exited before readiness (code ${String(code)}, signal ${String(signal)})\n${output}`,
-        ),
-      );
-    });
+async function startServer(command, args, env) {
+  const child = spawnCommand(command, args, {
+    cwd: projectRoot, detached: process.platform !== "win32", env,
+    stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true,
   });
-
+  let rawOutput = "";
+  const output = () => redactLaunchTokens(rawOutput);
+  const consume = chunk => { rawOutput = `${rawOutput}${String(chunk)}`.slice(-maxCapturedOutput); };
+  child.stdout.on("data", consume);
+  child.stderr.on("data", consume);
+  const channel = new HarnessHostChannel(child, startupTimeoutMs, output);
+  child.once("exit", () => channel.dispose());
   try {
-    const endpoint = await ready;
-    const authenticatedFetch =
-      await exchangeBrowserAuthentication(endpoint);
-    if (output.includes(endpoint.launchToken)) {
-      throw new Error(
-        "Harness launch token reached retained smoke output",
-      );
-    }
-    return {
-      baseUrl: endpoint.baseUrl,
-      child,
-      fetch: authenticatedFetch,
-      output: () => output,
-    };
+    const endpoint = parseAuthenticatedReadyUrl(await channel.ready);
+    const authenticatedFetch = await exchangeBrowserAuthentication(endpoint);
+    if (output().includes(endpoint.launchToken)) throw new Error("Harness launch token reached smoke output");
+    return { baseUrl: endpoint.baseUrl, child, fetch: authenticatedFetch, output };
   } catch (error) {
     await stopServer(child).catch(() => {});
+    channel.dispose();
     throw error;
   }
 }
@@ -591,7 +558,8 @@ async function stopServer(child) {
     ]);
   };
 
-  signalCommandProcessTree(child, "SIGTERM");
+  if (child.connected) child.send({ type: "shutdown" }, () => {});
+  else signalCommandProcessTree(child, "SIGTERM");
   let exited = await waitForExit();
   if (!exited) {
     signalCommandProcessTree(child, "SIGKILL");
@@ -601,6 +569,52 @@ async function stopServer(child) {
   child.stderr?.destroy();
   if (!exited) {
     throw new Error("Harness process tree did not exit during smoke cleanup");
+  }
+}
+
+async function verifyDesktopHostLifecycle(executable, layout, environment, home) {
+  for (const mode of ["shutdown", "disconnect", "startup-failure"]) {
+    const child = spawnCommand(executable, harnessHostArguments(mode === "startup-failure"
+      ? { ...layout, productPatch: join(home, "missing-overlay.yml") } : layout), {
+      cwd: projectRoot, detached: process.platform !== "win32", windowsHide: true,
+      env: { ...environment, DSH_HOME: home, MINKE_LM_STUDIO_ENABLED: "0", MINKE_OLLAMA_ENABLED: "0" },
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+    });
+    let output = "";
+    const consume = chunk => { output = `${output}${String(chunk)}`.slice(-maxCapturedOutput); };
+    child.stdout.on("data", consume);
+    child.stderr.on("data", consume);
+    const channel = new HarnessHostChannel(child, startupTimeoutMs, () => redactLaunchTokens(output));
+    let timer;
+    try {
+      if (mode === "startup-failure") {
+        await channel.ready.then(() => { throw new Error("invalid Host overlay unexpectedly booted"); }, () => {});
+        if (channel.diagnostic === undefined) throw new Error("Host startup failed without a structured diagnostic");
+      } else {
+        const endpoint = parseAuthenticatedReadyUrl(await channel.ready);
+        const authenticatedFetch = await exchangeBrowserAuthentication(endpoint);
+        const response = await authenticatedFetch(`${endpoint.baseUrl}/`);
+        if (!response.ok) throw new Error(`Desktop Host page failed (${response.status})`);
+        const inspection = await channel.inspectQuit();
+        if (inspection.activeTasks || inspection.scheduledTasks) throw new Error("fresh Desktop Host reported interruptible work");
+      }
+      const exited = child.exitCode !== null || child.signalCode !== null
+        ? Promise.resolve()
+        : new Promise(resolve => child.once("exit", resolve));
+      if (mode === "shutdown") channel.requestShutdown();
+      if (mode === "disconnect") child.disconnect();
+      await Promise.race([exited, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Desktop Host did not exit after ${mode}`)), 15_000);
+      })]);
+      if (mode === "startup-failure" ? child.exitCode !== 1 : child.exitCode !== 0) {
+        throw new Error(`Desktop Host exit ${String(child.exitCode)} after ${mode}\n${redactLaunchTokens(output)}`);
+      }
+      if (mode === "shutdown" && !channel.shutdownCompleted) throw new Error("Desktop Host did not acknowledge profile teardown");
+    } finally {
+      clearTimeout(timer);
+      channel.dispose();
+      if (child.exitCode === null && child.signalCode === null) await stopServer(child);
+    }
   }
 }
 
@@ -657,6 +671,7 @@ async function main() {
   let server;
 
   try {
+    await verifyDesktopHostLifecycle(electronExecutable, runtimeLayout, env, join(temporaryRoot, "desktop-home"));
     await Promise.all([
       cp(fixtureSource, fixtureCopy, { recursive: true }),
       cp(failingFixtureSource, failingFixtureCopy, { recursive: true }),
@@ -868,20 +883,7 @@ async function main() {
       } },
     });
     await writeFile(join(harnessHome, "settings.yaml"), legacyModelSettings, "utf8");
-    server = await startServer(
-      executable("dsh"),
-      [
-        "web",
-        "--patch",
-        runtimeLayout.productPatch,
-        "--no-open",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "0",
-      ],
-      env,
-    );
+    server = await startServer(electronExecutable, harnessHostArguments(runtimeLayout), env);
     const isolatedFailureMarker =
       `${failingEntryId} (${failingPluginId})`;
     if (!server.output().includes(isolatedFailureMarker)) {
@@ -920,8 +922,10 @@ async function main() {
     if (!modelUpdate.ok) throw new Error(`native model settings edit failed (${modelUpdate.status})`);
     await waitForModelProvider(server, "minke-smoke-live");
     const minkeCapabilities = await fetchMinkeHostCapabilities(server);
+    await smokeMinkeApiTrust(server);
     await smokeMinkePwa(server);
     await smokeFeedbackPolicy(server);
+    await smokeAutomationTasks(server);
     await smokeDshTerminal(server);
     const officePreview = await server.fetch(`${server.baseUrl}/smoke/office-preview`);
     const officePdf = Buffer.from(await officePreview.arrayBuffer());
@@ -945,13 +949,16 @@ async function main() {
     const productSource = productClient.ok
       ? await productClient.text()
       : "";
-    if (
-      !productClient.ok ||
-      !productSource.includes("settings.open") ||
-      !productSource.includes("session.new") ||
-      !productSource.includes("locale/change")
-    ) {
-      throw new Error(`${productPackageName} client bundle was not served`);
+    const stagedProductSource = await readFile(
+      join(runtimeRoot, "node_modules", productPackageName, "lib", "client.js"),
+      "utf8",
+    );
+    // DSH client-modules replaces the map trailer and terminates every combo
+    // entry with ";\n". Compare the entire executable payload it should serve.
+    const sourceMapTrailer = /(?:\r?\n)?\/\/# sourceMappingURL=[^\r\n]*(?:\r?\n)?$/u;
+    const expectedExecutable = `${stagedProductSource.replace(sourceMapTrailer, "\n")};\n`;
+    if (!productClient.ok || productSource.replace(sourceMapTrailer, "\n") !== expectedExecutable) {
+      throw new Error(`${productPackageName} client bundle differs from the staged artifact`);
     }
 
     const initialRow = manifest.entries.find((entry) => entry.id === pluginId);
@@ -996,10 +1003,7 @@ async function main() {
     for (const safeMode of [false, true]) {
       await stopServer(server.child);
       server = undefined;
-      server = await startServer(executable("dsh"), [
-        "web", "--patch", runtimeLayout.productPatch,
-        "--no-open", "--host", "127.0.0.1", "--port", "0",
-      ], {
+      server = await startServer(electronExecutable, harnessHostArguments(runtimeLayout), {
         ...env,
         MINKE_PLUGIN_SAFE_MODE: safeMode ? "1" : "0",
       });
@@ -1029,6 +1033,7 @@ async function main() {
     console.log(
       [
         "Harness runtime smoke passed:",
+        "  Desktop Host: IPC readiness, task inspection, acknowledged shutdown, parent loss and startup diagnostics functional",
         `  Electron Node: ${nodeVersion.stdout.trim()}`,
         `  bundled dsh:   ${dshVersion.stdout.trim()}`,
         `  bundled pnpm:  ${pnpmVersion.stdout.trim()}`,
@@ -1041,9 +1046,10 @@ async function main() {
         `  product overlay: ${productPackageName}`,
         `  isolated plugin failure: ${failingPluginId}`,
         "  native PluginManager: live disabling retains installed bundles across restart",
+        "  Automation tasks: native scheduler and task UI are active by default",
         "  native model settings: legacy import, live edits and restart persistence",
         "  plugin recovery: safe mode retains installations",
-        `  Minke Host RPC: files=${String(minkeCapabilities.files.available)}, tabs=${String(minkeCapabilities.tabs.available)}`,
+        `  Minke shared Remote API: files=${String(minkeCapabilities.files.available)}, tabs=${String(minkeCapabilities.tabs.available)}`,
         "  native DSH Terminal: shell command, resize, exit and close functional",
         "  Minke PWA: standalone manifest/icons/service worker",
         `  bundled Office preview: DOCX converted to ${String(officePdf.length)} PDF bytes`,

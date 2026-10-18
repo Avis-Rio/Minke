@@ -1,18 +1,18 @@
 diff --git a/node_modules/@deepseek-ai/cordis-plugin-loader/lib/index.js b/node_modules/@deepseek-ai/cordis-plugin-loader/lib/index.js
 --- a/node_modules/@deepseek-ai/cordis-plugin-loader/lib/index.js
 +++ b/node_modules/@deepseek-ai/cordis-plugin-loader/lib/index.js
-@@ -448,2 +448,3 @@
+@@ -450,2 +450,3 @@
  	async _init() {
 +		this.failure = void 0;
- 		let exports;
-@@ -452,2 +453,3 @@
+ 		let moduleNamespace;
+@@ -454,2 +455,3 @@
  		} catch (error) {
 +			this.failure = error;
  			this.ctx.logger.error(error);
 diff --git a/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js b/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js
 --- a/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js
 +++ b/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js
-@@ -918,4 +918,12 @@
+@@ -1014,4 +1014,12 @@
  */
 +function readMinkePluginPolicy(environment = process.env) {
 +	const safeMode = environment.MINKE_PLUGIN_SAFE_MODE;
@@ -20,13 +20,13 @@ diff --git a/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js b/node_modules/
 +	return { safeMode: safeMode === "1" };
 +}
  function loadProfileDirectory(binName, dir, installAnchor, options = {}) {
--	const bundles = readProfileManifest(binName, dir).dsh?.profile?.bundles ?? [];
-+	const manifest = readProfileManifest(binName, dir);
+-	const bundles = dropRetiredBundles(dir, readProfileManifest(binName, dir)).dsh?.profile?.bundles ?? [];
++	const manifest = dropRetiredBundles(dir, readProfileManifest(binName, dir));
 +	const externalBundles = new Set(Object.keys(manifest.dependencies ?? {}));
 +	const pluginPolicy = readMinkePluginPolicy();
 +	const bundles = (manifest.dsh?.profile?.bundles ?? []).filter(packageName => !externalBundles.has(packageName) || !pluginPolicy.safeMode);
  	const layers = [];
-@@ -3835,2 +3843,4 @@
+@@ -4270,2 +4278,4 @@
  const requiredStartupEntryIds = new Set([
 +	"minke-overlay",
 +	"llm-pi-ai",

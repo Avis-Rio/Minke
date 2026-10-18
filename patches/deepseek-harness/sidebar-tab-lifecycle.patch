@@ -1,7 +1,7 @@
 diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-right/lib/client.js b/node_modules/@deepseek-ai/dsh-client-ui-sidebar-right/lib/client.js
 --- a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-right/lib/client.js
 +++ b/node_modules/@deepseek-ai/dsh-client-ui-sidebar-right/lib/client.js
-@@ -4893,3 +4893,9 @@
+@@ -973,3 +973,9 @@
  		*/
 -		function createSidebarRightStore(seed) {
 +		function createSidebarRightStore(seed, admit = () => true) {
@@ -12,7 +12,7 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-right/lib/client.js
 +                return after;
 +            });
  			const handle = (0, _deepseek_ai_dsh_client_store.defineStore)({
-@@ -4898,15 +4904,15 @@
+@@ -978,15 +984,15 @@
  					open: (d, sessionId) => {
 -						d.bySession = seat(d, sessionId, (surface) => surface);
 +						d.bySession = guardedSeat(d, sessionId, (surface) => surface);
@@ -33,13 +33,13 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-right/lib/client.js
 -						d.bySession = seat(d, sessionId, (s) => {
 +						d.bySession = guardedSeat(d, sessionId, (s) => {
  							const next = advance(s, (state, mint, makeTab) => (0, _deepseek_ai_dsh_client_ui_dockkit.dockPaneIds)(state).length >= 2 || (0, _deepseek_ai_dsh_client_ui_dockkit.getPane)(state, paneId ?? (0, _deepseek_ai_dsh_client_ui_dockkit.activeDockPaneId)(state)).tabs.length === 0 ? [] : (0, _deepseek_ai_dsh_client_ui_dockkit.planSplitPane)(state, mint, paneId, makeTab), seed);
-@@ -4920,3 +4926,4 @@
+@@ -1000,3 +1006,4 @@
  					openContent: (d, sessionId, intent, settled) => {
 -						d.bySession = seat(d, sessionId, (s) => advance(s, (state, mint) => {
 +                        let acceptedId; let accepted = false;
 +						d.bySession = guardedSeat(d, sessionId, (s) => advance(s, (state, mint) => {
  							const { kind, contentId, title, replaceTab: replace } = intent;
-@@ -4962,11 +4969,12 @@
+@@ -1042,11 +1049,12 @@
  							});
 -							settled(planned.tabId);
 +							acceptedId = planned.tabId;
@@ -56,7 +56,7 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-right/lib/client.js
 -						d.bySession = seat(d, sessionId, (s) => advance(s, (state) => {
 +						d.bySession = guardedSeat(d, sessionId, (s) => advance(s, (state) => {
  							if (!canCloseTab(s, tabId)) return [];
-@@ -4987,12 +4995,12 @@
+@@ -1067,12 +1075,12 @@
  					focusTab: (d, sessionId, tabId) => {
 -						d.bySession = seat(d, sessionId, (s) => advance(s, (state) => planFocusTab(state, tabId), seed));
 +						d.bySession = guardedSeat(d, sessionId, (s) => advance(s, (state) => planFocusTab(state, tabId), seed));
@@ -73,7 +73,7 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-right/lib/client.js
 -						d.bySession = seat(d, sessionId, (s) => advance(s, (state, mint, makeTab) => {
 +						d.bySession = guardedSeat(d, sessionId, (s) => advance(s, (state, mint, makeTab) => {
  							if (zone === "top" || zone === "bottom") return [];
-@@ -5004,6 +5012,6 @@
+@@ -1084,6 +1092,6 @@
  					floatTab: (d, sessionId, tabId, rect) => {
 -						d.bySession = seat(d, sessionId, (s) => advance(s, (state, mint) => (0, _deepseek_ai_dsh_client_ui_dockkit.planFloatTab)(state, mint, tabId, rect).ops, seed));
 +						d.bySession = guardedSeat(d, sessionId, (s) => advance(s, (state, mint) => (0, _deepseek_ai_dsh_client_ui_dockkit.planFloatTab)(state, mint, tabId, rect).ops, seed));
@@ -82,17 +82,17 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-right/lib/client.js
 -						d.bySession = seat(d, sessionId, (s) => advance(s, (state) => {
 +						d.bySession = guardedSeat(d, sessionId, (s) => advance(s, (state) => {
  							const floated = (0, _deepseek_ai_dsh_client_ui_dockkit.getPane)(state, paneId).tabs[0];
-@@ -5015,3 +5023,3 @@
+@@ -1095,3 +1103,3 @@
  					moveFloat: (d, sessionId, paneId, x, y) => {
 -						d.bySession = seat(d, sessionId, (s) => advance(s, () => [{
 +						d.bySession = guardedSeat(d, sessionId, (s) => advance(s, () => [{
  							type: "moveFloat",
-@@ -5023,3 +5031,3 @@
+@@ -1103,3 +1111,3 @@
  					resizeFloat: (d, sessionId, paneId, rect) => {
 -						d.bySession = seat(d, sessionId, (s) => advance(s, () => [{
 +						d.bySession = guardedSeat(d, sessionId, (s) => advance(s, () => [{
  							type: "resizeFloat",
-@@ -5030,9 +5038,9 @@
+@@ -1110,9 +1118,9 @@
  					resizeSplit: (d, sessionId, splitId, sizes) => {
 -						d.bySession = seat(d, sessionId, (s) => advance(s, () => (0, _deepseek_ai_dsh_client_ui_dockkit.planResizeSplit)(splitId, sizes, .2), seed));
 +						d.bySession = guardedSeat(d, sessionId, (s) => advance(s, () => (0, _deepseek_ai_dsh_client_ui_dockkit.planResizeSplit)(splitId, sizes, .2), seed));
@@ -105,12 +105,12 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-right/lib/client.js
 -						d.bySession = seat(d, sessionId, (s) => stepped(s, _deepseek_ai_dsh_client_ui_dockkit.stepForward));
 +						d.bySession = guardedSeat(d, sessionId, (s) => stepped(s, _deepseek_ai_dsh_client_ui_dockkit.stepForward));
  					}
-@@ -5727,2 +5735,3 @@
+@@ -2045,2 +2053,3 @@
  						if (surface !== void 0) controller.tabDomain.sync(sessionId, surface.layout);
 +                        controller.notifyMinkeTabs();
  					};
-@@ -5750,2 +5759,84 @@
- 			binding;
+@@ -2071,2 +2080,84 @@
+ 			rooms;
 +
 +            // Minke's pinned extension seam. DSH remains the only layout writer;
 +            // Minke owns content instances and approves their removal before commit.
@@ -148,7 +148,7 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-right/lib/client.js
 +                            if (!state) return [];
 +                            const pane = _deepseek_ai_dsh_client_ui_dockkit.getPane(state, state.activePaneId);
 +                            const ids = Object.values(state.nodes).flatMap(node => node.kind === "pane" ? node.tabs : []);
-+                            return [{ sessionId, expanded: state.expanded, activeId: pane.activeTabId, paneIds: Object.values(state.nodes).filter(node => node.kind === "pane").map(node => node.id), tabs: ids.map(id => state.tabs[id]) }];
++                            return [{ sessionId, expanded: state.expanded, activeId: pane.activeTabId, tabs: ids.map(id => state.tabs[id]) }];
 +                        })
 +                    }),
 +                    open: (sessionId, tab, activate) => {
@@ -194,7 +194,7 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-right/lib/client.js
 +            }
 +
  			closeHandlers = /* @__PURE__ */ new Map();
-@@ -8296,3 +8388,3 @@
+@@ -4865,3 +4956,3 @@
  			ctx.effect(() => {
 -				const handle = createSidebarRightStore(() => defaultSeed(tabs));
 +				const handle = createSidebarRightStore(() => defaultSeed(tabs), (sessionId, before, after) => controller.admitMinkeTabs(sessionId, before, after));

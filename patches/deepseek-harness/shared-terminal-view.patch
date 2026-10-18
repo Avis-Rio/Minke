@@ -1,17 +1,11 @@
 diff --git a/node_modules/@deepseek-ai/dsh-api-terminal-controller/lib/client.js b/node_modules/@deepseek-ai/dsh-api-terminal-controller/lib/client.js
 --- a/node_modules/@deepseek-ai/dsh-api-terminal-controller/lib/client.js
 +++ b/node_modules/@deepseek-ai/dsh-api-terminal-controller/lib/client.js
-@@ -687,6 +687,7 @@
- 			holds = /* @__PURE__ */ new Map();
- 			releasing = /* @__PURE__ */ new Set();
+@@ -950,2 +950,3 @@
  			openTabs = [];
 +			tabOwners = new Map();
  			/**
- 			* @param ctx - Client root Context with Gateway and terminal Remote namespace.
- 			* @param remote - generated terminal namespace.
-@@ -788,8 +789,10 @@
- 			* Reconcile this window's open terminal occurrences, including dormant saved Sessions.
- 			* @param tabs - terminal-kind membership supplied by the sidebar layout owner.
+@@ -1075,4 +1076,6 @@
  			*/
 -			retainTabs(tabs) {
 -				this.openTabs = tabs;
@@ -20,23 +14,15 @@ diff --git a/node_modules/@deepseek-ai/dsh-api-terminal-controller/lib/client.js
 +                else this.tabOwners.delete(owner);
 +                this.openTabs = [...this.tabOwners.values()].flat();
  				this.reconcileHolds();
- 			}
- 			hold(sessionId, id) {
 diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal/lib/client.js b/node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal/lib/client.js
 --- a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal/lib/client.js
 +++ b/node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal/lib/client.js
-@@ -164,7 +164,7 @@
- 		//#endregion
- 		//#region lib/types/client/LazyTerminalBody.js
+@@ -166,3 +166,3 @@
  		/** Load xterm only after a terminal body is mounted. */
 -		const LoadedTerminalBody = (0, react.lazy)(async () => ({ default: (await require.async("./client.terminal.js")).TerminalBody }));
 +		const LoadedTerminalBody = (0, react.lazy)(async () => ({ default: (await require.async("./client.terminal.js")).TerminalView }));
  		/**
- 		* Suspend while the package-local terminal chunk arrives.
- 		* @param props - Terminal body props supplied by the sidebar slot.
-@@ -460,6 +460,33 @@
- 				getSnapshot: () => ctx.theme.getTheme(),
- 				subscribe: (listener) => ctx.on("theme/change", listener)
+@@ -462,2 +462,29 @@
  			};
 +            // Shared native screen for Sidebar and embedded bottom tabs. The
 +            // provider owns its DOM, xterm, model and application color resets.
@@ -66,23 +52,15 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal/lib/client
 +                }
 +            });
  			ctx.effect(() => ctx.slots.inject("sidebar.right.tab.guide.entry", () => ctx.slots.register({
- 				name: "sidebar.right.tab.guide.entry",
- 				key: id,
-@@ -480,7 +507,7 @@
- 					...inject(sessionId),
- 					hooks: { theme }
+@@ -482,3 +509,3 @@
  				})
 -			}, LazyTerminalBody)), "ui-sidebar-terminal.body");
 +			}, SidebarTerminalBody)), "ui-sidebar-terminal.body");
  			ctx.effect(() => ctx.slots.inject("sidebar.right.pane.tab.title", () => ctx.slots.register({
- 				name: "sidebar.right.pane.tab.title",
- 				key: id,
 diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal/lib/client.terminal.js b/node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal/lib/client.terminal.js
 --- a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal/lib/client.terminal.js
 +++ b/node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal/lib/client.terminal.js
-@@ -13152,18 +13152,20 @@
- 			* @param background - resolved opaque DSH background.
- 			* @param foreground - resolved DSH text color.
+@@ -13154,5 +13154,4 @@
  			*/
 -			update(background, foreground) {
 -				if (this.defaults.background === background && this.defaults.foreground === foreground) return;
@@ -90,10 +68,7 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal/lib/client
 +			update(background, foreground, overrides = {}) {
 +                const next = {
  					background,
- 					foreground,
- 					cursor: foreground,
- 					cursorAccent: background,
- 					selectionBackground: foreground,
+@@ -13163,5 +13162,8 @@
  					selectionForeground: background,
 -					selectionInactiveBackground: foreground
 -				};
@@ -105,11 +80,7 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal/lib/client
 +                this.defaults = next;
 +                this.apply();
  			}
- 			/** Preferred cursor color after the initial DSH update, including OSC 12 overrides. */
- 			get cursor() {
-@@ -13267,11 +13269,8 @@
- 		* @param props - sidebar occurrence, model lookup and translated copy.
- 		* @returns the terminal screen and any pending or exceptional state.
+@@ -13269,7 +13271,4 @@
  		*/
 -		function TerminalBody({ useTabInfo, useTerminal, useTheme, view, t }) {
 -			const { tab } = useTabInfo();
@@ -119,19 +90,12 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal/lib/client
 +		function TerminalView({ model, visible, onNewTerminal, theme, appearance, t }) {
 +            const state = react.useSyncExternalStore(model.state.subscribe, model.state.getSnapshot);
  			(0, react.useEffect)(() => model.mount(), [model]);
- 			if (state === void 0) return null;
- 			const newTerminal = (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
-@@ -13283,13 +13282,18 @@
- 					children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconPlusOutlineRegular, {})
- 				}),
+@@ -13285,3 +13284,3 @@
  				onClick: () => {
 -					tab.actions.openTab("terminal", { replaceTab: true });
 +					onNewTerminal();
  				},
- 				children: t("new")
- 			});
- 			if (state.issue === "missingTerminal") return (0, react_jsx_runtime.jsx)("section", {
- 				className: terminal_module_css_default.root,
+@@ -13292,2 +13291,7 @@
  				"data-sidebar-terminal": true,
 +                "data-terminal-renderer": "dsh",
 +                style: {
@@ -139,11 +103,7 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal/lib/client
 +                    "--dsw-alias-label-primary": appearance.theme?.foreground
 +                },
  				children: (0, react_jsx_runtime.jsxs)("div", {
- 					className: terminal_module_css_default.empty,
- 					children: [
-@@ -13336,6 +13340,11 @@
- 			return (0, react_jsx_runtime.jsxs)("section", {
- 				className: terminal_module_css_default.root,
+@@ -13338,2 +13342,7 @@
  				"data-sidebar-terminal": true,
 +                "data-terminal-renderer": "dsh",
 +                style: {
@@ -151,59 +111,53 @@ diff --git a/node_modules/@deepseek-ai/dsh-client-ui-sidebar-terminal/lib/client
 +                    "--dsw-alias-label-primary": appearance.theme?.foreground
 +                },
  				children: [
- 					(status !== void 0 || retry || readOnly) && (0, react_jsx_runtime.jsxs)("div", {
- 						className: terminal_module_css_default.status,
-@@ -13375,7 +13384,8 @@
- 					state.info !== void 0 && (0, react_jsx_runtime.jsx)(TerminalScreen, {
- 						state,
+@@ -13377,3 +13386,4 @@
  						model,
 -						visible: tab.visible,
 +						visible,
 +                        appearance,
  						label: t("title"),
- 						theme
- 					}),
-@@ -13387,7 +13397,7 @@
- 				]
- 			});
+@@ -13389,3 +13399,3 @@
  		}
 -		function TerminalScreen({ state, model, visible, label, theme }) {
 +		function TerminalScreen({ state, model, visible, label, theme, appearance }) {
  			const element = (0, react.useRef)(null);
- 			const terminal = (0, react.useRef)();
- 			const fit = (0, react.useRef)();
-@@ -13440,9 +13450,22 @@
- 				};
- 			}, [model]);
+@@ -13448,17 +13458,18 @@
  			(0, react.useLayoutEffect)(() => {
 -				const style = getComputedStyle(element.current);
 -				colors.current.update(style.backgroundColor, style.color);
 -			}, [theme, model]);
+-			(0, react.useLayoutEffect)(() => {
+-				const xterm = terminal.current;
+-				if (xterm.options.fontFamily === fontFamily && xterm.options.fontSize === fontSize) return;
+-				xterm.options.fontFamily = fontFamily;
+-				xterm.options.fontSize = fontSize;
+-				const { state: live, visible: shown } = current.current;
+-				if (shown && live.writable && element.current.clientWidth && element.current.clientHeight) fitScreen(xterm, fit.current, live, model);
+-			}, [
+-				fontFamily,
+-				fontSize,
+-				model
+-			]);
 +                const style = getComputedStyle(element.current);
 +                const xterm = terminal.current;
-+                xterm.options.fontFamily = appearance.fontFamily || style.getPropertyValue("--ds-font-family-code").trim() || "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-+                xterm.options.fontSize = appearance.fontSize ?? 13;
++                xterm.options.fontFamily = fontFamily;
++                xterm.options.fontSize = fontSize;
 +                xterm.options.lineHeight = appearance.lineHeight ?? 1;
 +                colors.current.update(style.backgroundColor, style.color, appearance.theme);
 +                let disposed = false;
 +                const measure = () => {
-+                    if (!disposed && current.current.visible && current.current.state.writable && element.current?.clientWidth) {
++                    if (!disposed && current.current.visible && current.current.state.writable && element.current?.clientWidth && element.current.clientHeight) {
 +                        fitScreen(xterm, fit.current, current.current.state, model);
 +                    }
 +                };
 +                measure();
 +                void document.fonts?.ready.then(measure);
 +                return () => { disposed = true; };
-+            }, [theme, model, appearance]);
++            }, [theme, model, appearance, fontFamily, fontSize]);
  			(0, react.useLayoutEffect)(() => {
- 				const xterm = terminal.current;
- 				const render = state.render;
-@@ -13490,7 +13513,7 @@
- 			model.resize(cols, rows);
- 		}
+@@ -13515,3 +13526,3 @@
  		//#endregion
 -		exports.TerminalBody = TerminalBody;
 +		exports.TerminalView = TerminalView;
  		return module.exports;
- 	}
- });

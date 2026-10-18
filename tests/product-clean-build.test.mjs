@@ -22,6 +22,9 @@ test("product packages build before Harness has generated any protocol output", 
   const buildScript = join("scripts", "harness", "build-product-packages.mjs");
   await mkdir(dirname(join(root, buildScript)), { recursive: true });
   await cp(join(projectRoot, buildScript), join(root, buildScript));
+  for (const name of ["product-build-cache.mjs", "runtime-state.mjs"]) {
+    await cp(join(projectRoot, "scripts", "harness", name), join(root, "scripts", "harness", name));
+  }
 
   // Reuse installed third-party dependencies, but give the linked Harness
   // package only its checked-in source, as on a freshly checked-out CI runner.
@@ -59,13 +62,18 @@ test("product packages build before Harness has generated any protocol output", 
 
   const bundlePath = join(root, "packages", "harness-overlay", "lib", "client.js");
   const modules = [];
-  runInNewContext(await readFile(bundlePath, "utf8"), {
+  const bundle = await readFile(bundlePath, "utf8");
+  runInNewContext(bundle, {
     window: { __ModuleLoader__: { load: (entry) => modules.push(entry) } },
   });
   assert.equal(modules.length, 1);
   assert.equal(modules[0].id, "@lencx/minke-harness-overlay");
   assert.equal(typeof modules[0].factory, "function");
   const sourceMap = JSON.parse(await readFile(`${bundlePath}.map`, "utf8"));
+  assert.ok(bundle.includes('require("@deepseek-ai/dsh-client-ui-primitives")'),
+    "injected controls must resolve the host's shared native UI module");
+  assert.ok(!sourceMap.sources.some(path => /\/dsh-client-ui-primitives\/|\/ui-primitives\/src\//u.test(path.replaceAll("\\", "/"))),
+    "the overlay must not bundle a second native UI implementation");
   assert.ok(sourceMap.sources.some((path) =>
     path.replaceAll("\\", "/").endsWith("/dsh-typert-protocol/src/remote-error.ts")),
   "the client must bundle the official RemoteError from source");

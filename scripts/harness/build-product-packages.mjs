@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
-import { build } from "esbuild";
+import { build as esbuild, version as esbuildVersion } from "esbuild";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { recordProductBuild, reusableProductBuild } from "./product-build-cache.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const overlayPackageRoot = join(
@@ -43,6 +44,28 @@ const weixinOutputRoot = join(weixinPackageRoot, "lib");
 const telegramOutputRoot = join(telegramPackageRoot, "lib");
 const discordOutputRoot = join(discordPackageRoot, "lib");
 const tsconfigPath = join(projectRoot, "tsconfig.json");
+const clientPlatformModules = ["react", "react-dom", "react/jsx-runtime", "@deepseek-ai/dsh-client-ui-primitives"];
+const cachePath = join(projectRoot, "node_modules", ".cache", "minke", "product-build.json");
+const outputPaths = [overlayOutputRoot, modelRuntimeOutputRoot, imGatewayOutputRoot,
+  weixinOutputRoot, telegramOutputRoot, discordOutputRoot];
+const buildEnvironment = { nodeEnv: process.env.NODE_ENV ?? "production", esbuildVersion,
+  node: process.version, platform: process.platform, arch: process.arch };
+const buildInputs = new Set([
+  "scripts/harness/build-product-packages.mjs", "scripts/harness/product-build-cache.mjs",
+  "scripts/harness/runtime-state.mjs", "tsconfig.json", "package.json",
+  "pnpm-lock.yaml", "pnpm-workspace.yaml", "node_modules/.modules.yaml",
+  ...outputPaths.map(path => join(dirname(path), "package.json")),
+]);
+if (process.argv.includes("--if-stale") &&
+    await reusableProductBuild(projectRoot, cachePath, buildEnvironment, outputPaths)) {
+  console.log("Product packages are unchanged; skipped build");
+  process.exit(0);
+}
+async function build(options) {
+  const result = await esbuild({ ...options, absWorkingDir: projectRoot, metafile: true });
+  for (const path of Object.keys(result.metafile.inputs)) buildInputs.add(path);
+  return result;
+}
 
 async function readManifest(packageRoot) {
   return JSON.parse(
@@ -311,13 +334,16 @@ await Promise.all([
     platform: "browser",
     target: "chrome120",
     tsconfig: tsconfigPath,
-    // Product bundles precede the Harness build. This linked package exposes
-    // source entries so fresh checkouts need no generated protocol lib/.
+    // The browser needs only the official RemoteError value. Bundle its
+    // source leaf before Harness builds, without protocol's Host-only Cordis
+    // classes. Type imports and augmentations retain the public package face.
     alias: {
       "@deepseek-ai/dsh-typert-protocol":
-        "@deepseek-ai/dsh-typert-protocol/src/index.ts",
+        "@deepseek-ai/dsh-typert-protocol/src/remote-error.ts",
     },
-    external: ["react", "react/jsx-runtime"],
+    // Consume the shell's existing components and CSS instead of bundling a
+    // second copy of the native controls into the overlay.
+    external: clientPlatformModules,
     loader: {
       ".css": "text",
       ".png": "dataurl",
@@ -348,7 +374,8 @@ if (!clientBundle.startsWith("window.__ModuleLoader__.load(")) {
     "Minke overlay client bundle is missing its Harness loader wrapper",
   );
 }
-if (/require\(["']@deepseek-ai\//u.test(clientBundle)) {
+if ([...clientBundle.matchAll(/require\(["'](@deepseek-ai\/[^"']+)["']\)/gu)]
+  .some(([, specifier]) => !clientPlatformModules.includes(specifier))) {
   throw new Error(
     "Minke overlay client bundle leaked a non-platform Harness value import",
   );
@@ -364,3 +391,4 @@ console.log(`Built ${weixinPackageId} in ${weixinOutputRoot}`);
 console.log(`Built ${telegramPackageId} in ${telegramOutputRoot}`);
 console.log(`Built ${discordPackageId} in ${discordOutputRoot}`);
 console.log(`Built ${overlayPackageId} in ${overlayOutputRoot}`);
+await recordProductBuild(projectRoot, cachePath, buildEnvironment, [...buildInputs], outputPaths);

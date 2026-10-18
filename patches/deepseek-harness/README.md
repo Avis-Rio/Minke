@@ -4,15 +4,21 @@ Minke keeps `vendor/deepseek-harness` pinned and pristine. Local fixes that cann
 
 The applicator accepts git unified diffs that modify existing text files below `node_modules/@deepseek-ai/`. It rejects path escapes, file creation/deletion, renames, binary patches, stale hunks, and skipped patches. Patch contents are part of the runtime fingerprint and metadata; validation also reverse-checks that every declared patch is present before publishing or fast refresh.
 
-`window-drag-capability.patch` lets Minke opt into the existing macOS drag
-geometry watcher with `data-window-drag-platform="darwin"`. The full
-`data-platform` marker also requires DSH Desktop's native keyboard bridge, so
-Minke keeps its current shortcuts and layout. The preload supplies matching
-drag/control CSS; DSH retains ownership of geometry recollection. The frontend
-entry URL changes to invalidate previously cached code. Remove this patch when
-upstream exposes an independent window-drag capability.
+The former `window-drag-capability.patch` and its bundle generator are retired.
+Minke now supplies DSH's native keyboard and versioned shortcut preferences
+bridge and uses the standard `data-platform` marker. The unmodified upstream
+macOS drag watcher owns geometry recollection. Desktop input arbitration follows
+the pinned Desktop adapter; command registration, conflict detection, editing UI
+and persistence transactions use the shared DSH shortcut interfaces. Existing
+Minke bindings migrate once to device-local `keybindings.json`; the old config
+remains available for recovery. New installations inherit DSH's shared defaults.
+Locale initialization and notifications use `__DSH_LOCALE__`; the existing
+preference is read through `settings/describe`. Theme mirroring watches the
+native `data-ds-theme-source` attribute, and picked files use `__DSH_HOST_PATHS__`.
+The former product-only locale and theme bridges are removed; these integrations
+need no compiled-runtime patch.
 
-`win32-directory-picker.patch` is pinned to Harness `dsh-v0.1.7-rc.2` (`477b4f420553e8a52c2fbccc464d7561b239c443`). It:
+`win32-directory-picker.patch` is pinned to Harness `dsh-v0.2.1-rc.2` (`687f282e8625c6b8d11ff58211a90524be2e4317`). It:
 
 - routes the directory dialog worker and Windows ACL sandbox runner through `MINKE_NODE_EXECUTABLE`, with Electron Node mode explicitly restored for the dialog worker;
 - keeps the dialog worker's IPC channel open through non-terminal `showing` progress and disconnects only after a terminal result.
@@ -42,8 +48,12 @@ The native `Open In` application launcher retains each adapter's explicit
 visibility choice so requested GUI windows can appear. The audit recognizes
 only its detached, credential-scrubbed launch in the pinned resolver artifacts;
 other launch sites in that package remain subject to the background policy.
+The native-command runner also retains upstream's explicit `hidden`/`visible`
+argument so Explorer can show requested folders. Only that argv-only runner at
+its two pinned artifact paths is admitted; altered options and extra launches
+still fail the audit. The bundled runner keeps Minke's environment scrubbing.
 
-LibreOffice engine `0.1.1` packages redistribute their build sources with the
+LibreOffice engine `0.1.5` packages redistribute their build sources with the
 native binaries. The audit excludes only `.mjs` rebuild inputs declared by
 `prebuilds.json` below `sources/engine` and `sources/scripts` in those pinned
 engine packages. It retains the sources and licenses in the shipped runtime.
@@ -62,7 +72,7 @@ and the bundled pnpm adapter; the old CLI spawn patches are removed.
 `embedded-profile-resolution.patch` makes the main and Worker profile resolvers
 use Node's exposed internal modules when Minke launches with
 `--expose-internals`, as Cordis's own loader already does. The new upstream
-resolver otherwise unconditionally uses `node-addon-require-builtin` 0.1.6,
+resolver otherwise unconditionally uses `node-addon-require-builtin` 0.1.9,
 whose runtime fingerprint list rejects Minke's Electron 43.4.0. The resolver's
 loader-shape checks remain intact, and launches without the flag retain the
 upstream addon path. Remove this patch when upstream supports exposed internals
@@ -98,14 +108,14 @@ preview bundle loads PDF.js through the upstream runtime loader and no longer
 inlines the secure-context-only UUID call. The browser-artifact audit remains
 active for the staged client bundles.
 
-`connection-rpc-webserver-scope.patch` is pinned to the same Harness commit.
-Connection no longer requires a Web server at its root. Dedicated RPC channels
-therefore inject `webServer` in a child scope, as the upstream shared `/api`
-route already does. Cordis's exported `getTraceable` helper removes the service's
-dependency shadow before that injection, retaining caller isolation and lifetime.
-The route still uses Connection's authentication and trust
-checks, and its lifetime remains bound to the calling plugin. Remove this patch
-when upstream dedicated-channel registration owns that dependency itself.
+`connection-rpc-webserver-scope.patch` is retired. Portable Files register a
+`TypertRemoteService` through the public Cordis plugin lifecycle and use the
+shared `/api/minke/*` Remote namespace. The unmodified Gateway and Connection
+own the physical route, authentication and dispatch. There is no dedicated
+`/minke` channel or replacement route adapter. Tests execute the unmodified
+released services, including invalid arguments, cancellation, unloading and rejection of a
+non-owner Peer without an access grant. The rc.2 Gateway and RemoteAccess
+service own principal admission; Minke adds no parallel authorization route.
 
 `embedded-document-preview.patch` is pinned to the same Harness commit. It
 provides the private `minkeDocumentPreview` component face for Minke's Files
@@ -135,18 +145,16 @@ save flow without a preparing or download-started dialog. Download deduplication
 the menu's busy state, and dismissible failure details remain owned by Harness.
 Remove this patch when upstream offers equivalent quiet download feedback.
 
-`sidebar-add-menu.patch` exposes the add-tab intent through a session-scoped
-`sidebar.right.pane.add-menu` slot. It supplies the clicked pane and button anchor;
-without a picker registration it opens the native Start page. DSH continues to
-own the button, split controls, tab placement, and provider guide cards. Menus
-close when their pane or session is hidden or removed. Remove this patch when
-upstream offers an equivalent add-tab picker slot.
+`sidebar-add-menu.patch` is retired. The native add-tab intent opens the native
+Start page in the clicked pane; Minke contributes through the existing public
+`sidebar.right.tab.guide.entry` slot. Creation replaces that Start tab and
+preserves other panes and content instances. The custom add-menu slot, picker
+component, direct pane-creation override and pane-list projection are removed.
 
 `shared-terminal-view.patch` exposes the native Terminal screen as `terminalUI`
 and gives `webTerminals.retainTabs` an optional owner key (default: Sidebar).
 The bottom panel can then reuse DSH's model, screen and process lifecycle without
-overwriting Sidebar window holds. One appearance store updates both placements'
-fonts and ANSI palettes; the native OSC override/reset behavior remains intact.
+overwriting Sidebar window holds. DSH General owns both placements' fonts and sizes. One Minke appearance store updates their line spacing and ANSI palettes; the native OSC override/reset behavior remains intact.
 The old Minke desktop PTY, terminal IPC and Host long-poll transport are retired.
 Remove the patch when DSH exposes an equivalent reusable view, appearance input
 and independent retention owners. `shared-terminal.test.mjs` exercises the
@@ -171,9 +179,13 @@ The earlier 0.1.2-alpha.3 release removes only Harness's optional SQLite Session
 Minke's IM Gateway SQLite mailbox is a separate desktop transport store and is
 not part of that Session persistence contract.
 
-The 0.1.7-rc.2 runtime uses Session v4 and lifecycle-scoped SessionHandles.
-Minke's staged entry invokes the exported `runCli()` after loading its Node
-bootstrap; importing the upstream CLI no longer dispatches a command.
+The 0.2.1-rc.2 runtime uses Session v4 and lifecycle-scoped SessionHandles.
+After loading its Node bootstrap, Minke's desktop entry invokes the public
+`runProfile()` interface with the existing `web` profile and product overlay.
+Its private IPC channel follows DSH Desktop's readiness, quit inspection and
+acknowledged shutdown semantics; task inspection is checked against the pinned
+upstream implementation. CLI and migration invocations still call `runCli()`;
+importing the upstream CLI does not dispatch a command.
 Minke delegates Session creation, inspection, follow streams, and export to
 SessionController; Harness owns locking and adjacent format migrations, including
 v3 to v4, which write new logs and retain committed predecessors. Downgrade reads are not
@@ -195,15 +207,32 @@ Alpha.2 adds LibreOffice for Office previews. Its platform packages add about
 255–264 MiB on macOS, 185 MiB on Linux (WASM), and 325–328 MiB on Windows before
 pruning. All platforms share a 1 GiB runtime budget to leave room for Office
 engines and platform-specific native dependencies; the 15,000-file limit
-remains active. The staged rc.2 macOS ARM64 runtime measures about 342 MiB.
+remains active. The staged 0.2.1-rc.2 macOS ARM64 runtime measures about 379 MiB
+and contains 14,442 files.
 Every platform must still pass the size gate when staged.
 
-The rc.2 source cleaner omits `lib/desktop-keyboard-test-types` from its allowed
-outputs despite referencing that project. `scripts/harness/clean-source.mjs`
-executes the upstream cleaner with only that exact output admitted. Source and
-orphan-path checks remain intact; remove the adapter when upstream fixes its
-allowlist. This build-time adaptation does not modify the vendored checkout or
-ship in the runtime.
+The rc.2 source declares React 18 types at its workspace root. The manual
+React type symlink adapter is retired; the native frozen install and build own
+type resolution. Browser product bundles consume the official RemoteError
+source leaf, avoiding the protocol root's Host-only Cordis dependency before
+Harness has been built.
+
+The 0.2.0-rc.1 build folds desktop keyboard tests into the client project.
+Staging now runs the upstream cleaner directly; the old cleaner adapter and its
+output allowlist exception are retired.
+
+In 0.2.0-rc.2 the sidebar controller follows the selected Session and active
+panel before React renders, replacing the seat's former `bind()` lifecycle.
+The remaining sidebar patch retains content-admission behavior;
+its tests drive the native selection and panel observables. The desktop
+preload declares DSH's platform marker, so the native window-drag layout no
+longer needs a bundle patch.
+
+In 0.2.1-alpha.2 the profile-loading patch preserves upstream removal of the
+retired Schedule bundle. Schedule and its page are now native Web entries;
+time context and reminder tools belong to Agent Presets. The obsolete Minke
+enablement notice is removed. Legacy terminal fonts migrate once into DSH General before startup; the terminal-view patch no longer overrides typography. The native add-tab action and floating-tab accessibility are unmodified. Removed runtime invariant packages are no
+longer development dependencies.
 
 After changing the upstream pin or a patch, run:
 
@@ -214,3 +243,9 @@ pnpm test:desktop
 pnpm harness:smoke
 pnpm test:desktop:sidebar
 ```
+
+The current composition declares 11 runtime patches, down from 13 before the
+Remote API and native Start migrations. The remaining sidebar close-admission,
+embedded document body and shared terminal view patches still cover contracts
+not supplied by the pinned public APIs: undo/replacement vetoes for drafts,
+rendering unsaved document text, and independent terminal retention owners.
