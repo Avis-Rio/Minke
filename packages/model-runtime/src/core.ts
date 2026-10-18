@@ -80,7 +80,6 @@ export interface LmStudioRuntimeConfig {
   baseURL?: string;
   command?: string;
   apiKeyEnv?: string;
-  defaultContextWindow?: number;
   defaultMaxTokens?: number;
 }
 
@@ -99,7 +98,6 @@ export interface OllamaRuntimeConfig {
   lifecycle?: Exclude<ServiceLifecycle, "managed">;
   baseURL?: string;
   command?: string;
-  defaultContextWindow?: number;
   defaultMaxTokens?: number;
 }
 
@@ -113,14 +111,21 @@ export interface PreparedModelRuntime {
   providers: Record<string, ProviderProfile>;
   /** Reachable services, including ones whose model catalog is still empty. */
   servicesReady?: readonly string[];
-  prepareRequest(request: ModelRuntimeRequest): Promise<void>;
+  prepareRequest(request: ModelRuntimeRequest): Promise<ModelRuntimeContext | void>;
   dispose(): Promise<void>;
+}
+
+/** Live instance capacity; an empty object means it could not be confirmed. */
+export interface ModelRuntimeContext {
+  contextWindow?: number;
 }
 
 export interface ModelRuntimeRequest {
   provider: string;
   model: string;
   signal?: AbortSignal;
+  /** Metadata queries never load models. Actual call preparation may load one. */
+  load?: boolean;
 }
 
 export class ModelRuntimeRequestError extends Error {
@@ -152,19 +157,12 @@ interface LmStudioStatus {
 interface LmStudioLoadedInstance {
   id: string;
   contextLength: number;
-  loadConfig: {
-    eval_batch_size?: number;
-    flash_attention?: boolean;
-    num_experts?: number;
-    offload_kv_cache_to_gpu?: boolean;
-  };
 }
 
 interface LmStudioModelState {
   key: string;
   modelType?: string;
   displayName?: string;
-  maxContextLength?: number;
   loadedInstances: LmStudioLoadedInstance[];
   loadedInstancesComplete: boolean;
 }
@@ -172,7 +170,7 @@ interface LmStudioModelState {
 interface PreparedAdapter {
   provider?: ProviderProfile;
   serviceReady?: boolean;
-  prepareRequest?(request: ModelRuntimeRequest): Promise<void>;
+  prepareRequest?(request: ModelRuntimeRequest): Promise<ModelRuntimeContext | void>;
   dispose(): Promise<void>;
 }
 
@@ -373,10 +371,6 @@ function objectRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function optionalBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
-}
-
 function parseLmStudioModelStates(
   value: unknown,
 ): LmStudioModelState[] | undefined {
@@ -404,55 +398,14 @@ function parseLmStudioModelStates(
         loadedInstancesComplete = false;
         continue;
       }
-      const evalBatchSize = positiveInteger(config.eval_batch_size);
-      const flashAttention = optionalBoolean(config.flash_attention);
-      const numExperts = positiveInteger(config.num_experts);
-      const offloadKvCacheToGpu = optionalBoolean(
-        config.offload_kv_cache_to_gpu,
-      );
-      if (
-        (config.eval_batch_size !== undefined &&
-          evalBatchSize === undefined) ||
-        (config.flash_attention !== undefined &&
-          flashAttention === undefined) ||
-        (config.num_experts !== undefined && numExperts === undefined) ||
-        (config.offload_kv_cache_to_gpu !== undefined &&
-          offloadKvCacheToGpu === undefined)
-      ) {
-        loadedInstancesComplete = false;
-        continue;
-      }
-      loadedInstances.push({
-        id,
-        contextLength,
-        loadConfig: {
-          ...(evalBatchSize === undefined
-            ? {}
-            : { eval_batch_size: evalBatchSize }),
-          ...(flashAttention === undefined
-            ? {}
-            : { flash_attention: flashAttention }),
-          ...(numExperts === undefined
-            ? {}
-            : { num_experts: numExperts }),
-          ...(offloadKvCacheToGpu === undefined
-            ? {}
-            : {
-                offload_kv_cache_to_gpu: offloadKvCacheToGpu,
-              }),
-        },
-      });
+      loadedInstances.push({ id, contextLength });
     }
     const modelType = nonEmptyText(model.type)?.toLowerCase();
     const displayName = nonEmptyText(model.display_name, model.name);
-    const maxContextLength = positiveInteger(model.max_context_length);
     states.push({
       key,
       ...(modelType === undefined ? {} : { modelType }),
       ...(displayName === undefined ? {} : { displayName }),
-      ...(maxContextLength === undefined
-        ? {}
-        : { maxContextLength }),
       loadedInstances,
       loadedInstancesComplete,
     });
@@ -510,35 +463,16 @@ function lmStudioStateForModel(
   return { state: hosting };
 }
 
-function lmStudioLoadResult(value: unknown): {
-  instanceId: string;
-  contextLength?: number;
-} {
-  const result = objectRecord(value);
-  const instanceId = nonEmptyText(result?.instance_id);
-  if (result === undefined || instanceId === undefined) {
-    throw new Error("LM Studio returned an invalid model-load result");
-  }
-  const contextLength = positiveInteger(
-    objectRecord(result.load_config)?.context_length,
-  );
-  return {
-    instanceId,
-    ...(contextLength === undefined ? {} : { contextLength }),
-  };
-}
-
-async function mutateLmStudioModel(
+async function loadLmStudioModel(
   host: ModelRuntimeHost,
   origin: string,
   token: string | undefined,
-  path: "load" | "unload",
   body: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<unknown> {
   return await requestJson(
     host,
-    `${origin}/api/v1/models/${path}`,
+    `${origin}/api/v1/models/load`,
     token,
     {
       method: "POST",
@@ -564,280 +498,74 @@ function unsafeLmStudioModelStateError(
   );
 }
 
-function contextTooSmallError(
-  model: string,
-  currentContext: number | undefined,
-  requiredContext: number,
-): ModelRuntimeRequestError {
-  const current =
-    currentContext === undefined
-      ? "not loaded"
-      : `loaded with a ${String(currentContext)}-token context`;
-  return new ModelRuntimeRequestError(
-    `LM Studio model "${model}" is ${current}, but Minke requires at least `
-      + `${String(requiredContext)} context tokens. In LM Studio, unload and reload `
-      + `this model with Context Length ${String(requiredContext)} or higher, then retry.`,
-    "LM_STUDIO_CONTEXT_TOO_SMALL",
-  );
-}
-
-class LmStudioContextGate {
-  private readonly pending = new Map<string, Promise<void>>();
+/** Read effective capacity on every lookup; only call preparation may load. */
+class LmStudioModelContext {
+  private readonly pending = new Map<string, Promise<ModelRuntimeContext>>();
   private readonly host: ModelRuntimeHost;
   private readonly origin: string;
   private readonly token: string | undefined;
-  private readonly targetContext: number;
-  private readonly canReloadModels: boolean;
 
   constructor(
     host: ModelRuntimeHost,
     origin: string,
     token: string | undefined,
-    targetContext: number,
-    canReloadModels: boolean,
   ) {
     this.host = host;
     this.origin = origin;
     this.token = token;
-    this.targetContext = targetContext;
-    this.canReloadModels = canReloadModels;
   }
 
-  async prepare(model: string, signal?: AbortSignal): Promise<void> {
-    signal?.throwIfAborted();
-    const prior = this.pending.get(model) ?? Promise.resolve();
-    const operation = prior
-      .catch(() => undefined)
-      .then(async () => {
-        signal?.throwIfAborted();
-        await this.prepareSerial(model, signal);
-      });
-    this.pending.set(model, operation);
+  async prepare(request: ModelRuntimeRequest): Promise<ModelRuntimeContext> {
+    request.signal?.throwIfAborted();
+    if (request.load === false) return this.resolve(request);
+    const prior = this.pending.get(request.model) ?? Promise.resolve();
+    const operation = prior.catch(() => undefined).then(() => this.resolve(request));
+    this.pending.set(request.model, operation);
     try {
-      await operation;
+      return await operation;
     } finally {
-      if (this.pending.get(model) === operation) {
-        this.pending.delete(model);
-      }
+      if (this.pending.get(request.model) === operation) this.pending.delete(request.model);
     }
   }
 
-  private async prepareSerial(
-    model: string,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    const states = await fetchLmStudioModelStates(
-      this.host,
-      this.origin,
-      this.token,
-      signal,
-    );
-    // LM Studio before 0.4 has no v1 management API. Preserve compatibility:
-    // the downstream OpenAI adapter remains the only available probe.
-    if (states === undefined) return;
+  private async resolve(request: ModelRuntimeRequest): Promise<ModelRuntimeContext> {
+    const { model, signal } = request;
+    signal?.throwIfAborted();
+    const states = await fetchLmStudioModelStates(this.host, this.origin, this.token, signal);
+    // Older services can still generate, but a catalog limit is not evidence
+    // of loaded capacity. Never turn an unavailable lookup into a stale value.
+    if (states === undefined) return {};
     const resolved = lmStudioStateForModel(states, model);
-    if (resolved === undefined) return;
-    const requiredContext = Math.min(
-      this.targetContext,
-      resolved.state.maxContextLength ?? this.targetContext,
-    );
-    if (
-      resolved.instance !== undefined &&
-      resolved.instance.contextLength >= requiredContext
-    ) {
-      return;
+    if (resolved?.state.loadedInstancesComplete && resolved.instance !== undefined) {
+      return { contextWindow: resolved.instance.contextLength };
     }
-    if (resolved.instance === undefined) {
-      const explicitlyUnloaded =
-        resolved.state.key === model &&
-        isLmStudioGenerativeModel(resolved.state) &&
-        resolved.state.loadedInstancesComplete &&
-        resolved.state.loadedInstances.length === 0;
-      if (!explicitlyUnloaded) {
-        throw unsafeLmStudioModelStateError(model);
-      }
-      // Selecting a canonical model that LM Studio explicitly reports as
-      // unloaded authorizes one additive load. Existing instances remain
-      // untouched, including when LM Studio was started externally.
-      await this.ensureManagedContext(
-        resolved.state,
-        undefined,
-        requiredContext,
-        signal,
-      );
-      return;
-    }
-    if (!resolved.state.loadedInstancesComplete) {
+    if (request.load === false) return {};
+    if (resolved === undefined || resolved.state.key !== model ||
+        !isLmStudioGenerativeModel(resolved.state) ||
+        !resolved.state.loadedInstancesComplete || resolved.state.loadedInstances.length !== 0) {
       throw unsafeLmStudioModelStateError(model);
     }
-    if (!this.canReloadModels) {
-      throw contextTooSmallError(
-        model,
-        resolved.instance.contextLength,
-        requiredContext,
-      );
-    }
-    if (
-      resolved.instance.id !== resolved.state.key ||
-      model !== resolved.state.key
-    ) {
-      throw new ModelRuntimeRequestError(
-        `LM Studio model "${model}" uses a custom instance identifier. Minke cannot `
-          + `safely preserve that identifier while changing its context. In LM Studio, `
-          + `reload this instance with Context Length ${String(requiredContext)} or higher.`,
-        "LM_STUDIO_CONTEXT_ALIAS_UNSUPPORTED",
-      );
-    }
-
-    await this.ensureManagedContext(
-      resolved.state,
-      resolved.instance,
-      requiredContext,
-      signal,
-    );
-  }
-
-  private async ensureManagedContext(
-    state: LmStudioModelState,
-    instance: LmStudioLoadedInstance | undefined,
-    requiredContext: number,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    const desiredBody = {
-      model: state.key,
-      context_length: requiredContext,
-      ...instance?.loadConfig,
-      echo_load_config: true,
-    };
-    if (instance === undefined) {
-      try {
-        await mutateLmStudioModel(
-          this.host,
-          this.origin,
-          this.token,
-          "load",
-          desiredBody,
-          signal,
-        );
-        const confirmedStates = await fetchLmStudioModelStates(
-          this.host,
-          this.origin,
-          this.token,
-          signal,
-        );
-        const confirmed = confirmedStates === undefined
-          ? undefined
-          : lmStudioStateForModel(confirmedStates, state.key);
-        if (
-          confirmed === undefined ||
-          confirmed.state.key !== state.key ||
-          !confirmed.state.loadedInstancesComplete ||
-          confirmed.instance === undefined ||
-          confirmed.instance.contextLength < requiredContext
-        ) {
-          throw new Error(
-            "LM Studio did not confirm the requested loaded context",
-          );
-        }
-      } catch (error) {
-        throw new ModelRuntimeRequestError(
-          `Minke could not load LM Studio model "${state.key}" with `
-            + `${String(requiredContext)} context tokens. Reduce the configured context `
-            + `or load the model manually in LM Studio.`,
-          "LM_STUDIO_CONTEXT_PREPARATION_FAILED",
-          { cause: error },
-        );
-      }
-      this.host.log(
-        "info",
-        `model-runtime: loaded LM Studio model "${state.key}" with ${String(requiredContext)} context tokens`,
-      );
-      return;
-    }
-
-    await mutateLmStudioModel(
-      this.host,
-      this.origin,
-      this.token,
-      "unload",
-      { instance_id: instance.id },
-      signal,
-    );
-    let replacementId: string | undefined;
+    // Loading uses LM Studio's own defaults; never resize an existing instance.
     try {
-      const loaded = lmStudioLoadResult(
-        await mutateLmStudioModel(
-          this.host,
-          this.origin,
-          this.token,
-          "load",
-          desiredBody,
-          signal,
-        ),
-      );
-      replacementId = loaded.instanceId;
-      if (
-        loaded.contextLength !== undefined &&
-        loaded.contextLength < requiredContext
-      ) {
-        throw new Error(
-          `LM Studio loaded only ${String(loaded.contextLength)} context tokens`,
-        );
+      await loadLmStudioModel(this.host, this.origin, this.token, {
+        model,
+        echo_load_config: true,
+      }, signal);
+      const confirmed = await fetchLmStudioModelStates(this.host, this.origin, this.token, signal);
+      const loaded = confirmed === undefined ? undefined : lmStudioStateForModel(confirmed, model);
+      if (loaded?.state.loadedInstancesComplete && loaded.instance !== undefined) {
+        return { contextWindow: loaded.instance.contextLength };
       }
+      throw new Error("LM Studio did not confirm the loaded context");
     } catch (error) {
-      const rollbackFailures: unknown[] = [];
-      if (replacementId !== undefined) {
-        try {
-          await mutateLmStudioModel(
-            this.host,
-            this.origin,
-            this.token,
-            "unload",
-            { instance_id: replacementId },
-          );
-        } catch (rollbackError) {
-          rollbackFailures.push(rollbackError);
-        }
-      }
-      try {
-        await mutateLmStudioModel(
-          this.host,
-          this.origin,
-          this.token,
-          "load",
-          {
-            model: state.key,
-            context_length: instance.contextLength,
-            ...instance.loadConfig,
-            echo_load_config: true,
-          },
-        );
-      } catch (rollbackError) {
-        rollbackFailures.push(rollbackError);
-      }
+      signal?.throwIfAborted();
       throw new ModelRuntimeRequestError(
-        rollbackFailures.length === 0
-          ? `Minke could not expand LM Studio model "${state.key}" to `
-            + `${String(requiredContext)} context tokens; its previous `
-            + `${String(instance.contextLength)}-token configuration was restored.`
-          : `Minke could not expand or restore LM Studio model "${state.key}". `
-            + "Open LM Studio and reload the model manually.",
-        rollbackFailures.length === 0
-          ? "LM_STUDIO_CONTEXT_PREPARATION_FAILED"
-          : "LM_STUDIO_CONTEXT_ROLLBACK_FAILED",
-        {
-          cause:
-            rollbackFailures.length === 0
-              ? error
-              : new AggregateError([error, ...rollbackFailures]),
-        },
+        `Minke could not confirm the loaded context of LM Studio model "${model}". `
+          + "Load the model in LM Studio and retry.",
+        "LM_STUDIO_CONTEXT_PREPARATION_FAILED",
+        { cause: error },
       );
     }
-    this.host.log(
-      "info",
-      `model-runtime: expanded LM Studio model "${state.key}" from `
-        + `${String(instance.contextLength)} to ${String(requiredContext)} context tokens`,
-    );
   }
 }
 
@@ -882,9 +610,6 @@ function lmStudioStateListingEntry(
     ...(state.displayName === undefined
       ? {}
       : { display_name: state.displayName }),
-    ...(state.maxContextLength === undefined
-      ? {}
-      : { max_context_length: state.maxContextLength }),
   };
 }
 
@@ -948,37 +673,18 @@ function mergeLmStudioListings(
 function effectiveLmStudioContext(
   profile: ModelProfile,
   states: readonly LmStudioModelState[] | undefined,
-  contextOverride: number | undefined,
 ): ModelProfile {
-  if (states === undefined) return profile;
-  const resolved = lmStudioStateForModel(states, profile.id);
-  if (resolved === undefined) return profile;
-  if (contextOverride === undefined) {
-    // A loaded instance is the service's effective limit. For an unloaded
-    // model, preserve the capability reported by LM Studio's catalog.
-    return resolved.instance === undefined
-      ? profile
-      : {
-          ...profile,
-          contextWindow: resolved.instance.contextLength,
-        };
-  }
-  const required = Math.min(
-    contextOverride,
-    resolved.state.maxContextLength ?? contextOverride,
-  );
-  const contextWindow = Math.max(
-    required,
-    resolved.instance?.contextLength ?? 0,
-  );
-  return { ...profile, contextWindow };
+  const { contextWindow: _catalogCapacity, ...withoutContext } = profile;
+  const resolved = states === undefined ? undefined : lmStudioStateForModel(states, profile.id);
+  return resolved?.state.loadedInstancesComplete && resolved.instance !== undefined
+    ? { ...withoutContext, contextWindow: resolved.instance.contextLength }
+    : withoutContext;
 }
 
 async function discoverLmStudioModels(
   host: ModelRuntimeHost,
   baseURL: string,
   token: string | undefined,
-  contextOverride: number | undefined,
 ): Promise<ModelProfile[] | undefined> {
   const endpoint = new URL(baseURL);
   const [openAI, detailed, states] = await Promise.all([
@@ -990,7 +696,7 @@ async function discoverLmStudioModels(
   // The optional v0 metadata endpoint alone cannot establish a usable API.
   if (openAI === undefined && states === undefined) return undefined;
   return mergeLmStudioListings(openAI, detailed, states).map((profile) =>
-    effectiveLmStudioContext(profile, states, contextOverride)
+    effectiveLmStudioContext(profile, states)
   );
 }
 
@@ -1118,9 +824,6 @@ class LmStudioAdapter implements ModelRuntimeAdapter {
             DEFAULT_LM_STUDIO_BASE_URL,
           ])
         : [explicitBaseURL];
-    const contextOverride = positiveInteger(
-      this.config.defaultContextWindow,
-    );
     const probe = async (
       status: LmStudioStatus | undefined,
     ): Promise<{ baseURL: string; models: ModelProfile[] } | undefined> => {
@@ -1130,7 +833,6 @@ class LmStudioAdapter implements ModelRuntimeAdapter {
             host,
             baseURL,
             nonEmptyText(token),
-            contextOverride,
           );
           return models === undefined ? undefined : { baseURL, models };
         }),
@@ -1140,37 +842,24 @@ class LmStudioAdapter implements ModelRuntimeAdapter {
     };
     const preparedProvider = (
       selected: { baseURL: string; models: ModelProfile[] },
-      canReloadModels: boolean,
       dispose: () => Promise<void>,
     ): PreparedAdapter => {
       if (selected.models.length === 0) {
         return { serviceReady: true, dispose };
       }
-      const contextGate =
-        contextOverride === undefined
-          ? undefined
-          : new LmStudioContextGate(
-              host,
-              new URL(selected.baseURL).origin,
-              nonEmptyText(token),
-              contextOverride,
-              canReloadModels,
-            );
+      const modelContext = new LmStudioModelContext(
+        host, new URL(selected.baseURL).origin, nonEmptyText(token),
+      );
       return {
         provider: providerProfile(
           "LM Studio",
           selected.baseURL,
           selected.models,
-          this.config.defaultContextWindow,
+          undefined,
           this.config.defaultMaxTokens,
           auth,
         ),
-        ...(contextGate === undefined
-          ? {}
-          : {
-              prepareRequest: async ({ model, signal }) =>
-                await contextGate.prepare(model, signal),
-            }),
+        prepareRequest: request => modelContext.prepare(request),
         dispose,
       };
     };
@@ -1178,7 +867,7 @@ class LmStudioAdapter implements ModelRuntimeAdapter {
     const beforeStart = await readStatus();
     let selected = await probe(beforeStart);
     if (selected !== undefined) {
-      return preparedProvider(selected, false, async () => {});
+      return preparedProvider(selected, async () => {});
     }
     if (lifecycle === "external") {
       host.log(
@@ -1245,8 +934,90 @@ class LmStudioAdapter implements ModelRuntimeAdapter {
       await stopOwnedService();
       return { dispose: async () => {} };
     }
-    return preparedProvider(selected, ownsService, stopOwnedService);
+    return preparedProvider(selected, stopOwnedService);
   }
+}
+
+function ollamaModelName(model: string): string {
+  // A tag belongs to the final path component; a registry port is not a tag.
+  return model.slice(model.lastIndexOf("/") + 1).includes(":") ? model : `${model}:latest`;
+}
+
+/** Ollama's catalog describes trained capacity; /api/ps describes the runner. */
+function ollamaContextPreparer(
+  host: ModelRuntimeHost,
+  baseURL: string,
+  models: readonly ModelProfile[],
+): (request: ModelRuntimeRequest) => Promise<ModelRuntimeContext> {
+  const origin = new URL(baseURL).origin;
+  const known = new Set(models.map(model => ollamaModelName(model.id)));
+  const pending = new Map<string, Promise<ModelRuntimeContext>>();
+  const read = async (signal?: AbortSignal): Promise<unknown[] | undefined> => {
+    try {
+      const value = objectRecord(await requestJson(host, `${origin}/api/ps`, undefined, signal === undefined ? {} : { signal }));
+      return Array.isArray(value?.models) ? value.models : undefined;
+    } catch {
+      signal?.throwIfAborted();
+      return undefined;
+    }
+  };
+  const matches = (rows: unknown[], model: string): Record<string, unknown>[] => rows
+    .map(objectRecord)
+    .filter((row): row is Record<string, unknown> => row !== undefined &&
+      [row.name, row.model].some(name => typeof name === "string" && ollamaModelName(name) === ollamaModelName(model)));
+  const resolve = async ({ model, signal, load }: ModelRuntimeRequest): Promise<ModelRuntimeContext> => {
+    signal?.throwIfAborted();
+    const rows = await read(signal);
+    if (rows === undefined) return {};
+    const loaded = matches(rows, model);
+    const contextWindow = loaded.length === 1 ? positiveInteger(loaded[0]?.context_length) : undefined;
+    if (contextWindow !== undefined) return { contextWindow };
+    if (load === false) return {};
+    // Missing capacity on an existing runner must not cause it to be reloaded.
+    if (loaded.length > 0 || !known.has(ollamaModelName(model)) || rows.some(row => {
+      const record = objectRecord(row);
+      return nonEmptyText(record?.name, record?.model) === undefined;
+    })) {
+      throw new ModelRuntimeRequestError(
+        `Ollama did not report a unique loaded context for model "${model}". Check the model in Ollama and retry.`,
+        "OLLAMA_CONTEXT_UNKNOWN",
+      );
+    }
+    try {
+      // An empty prompt is Ollama's documented load-only operation. Prompts,
+      // tools and actual generation still go through DSH's native pi-ai adapter.
+      await requestJson(host, `${origin}/api/generate`, undefined, {
+        method: "POST",
+        body: { model, prompt: "", stream: false },
+        ...(signal === undefined ? {} : { signal }),
+        timeoutMs: MODEL_LOAD_TIMEOUT_MS,
+      });
+      const confirmed = await read(signal);
+      const instances = confirmed === undefined ? [] : matches(confirmed, model);
+      const actual = instances.length === 1 ? positiveInteger(instances[0]?.context_length) : undefined;
+      if (actual !== undefined) return { contextWindow: actual };
+      throw new Error("Ollama did not confirm the loaded context");
+    } catch (error) {
+      signal?.throwIfAborted();
+      throw new ModelRuntimeRequestError(
+        `Minke could not confirm the loaded context of Ollama model "${model}". Load the model in Ollama and retry.`,
+        "OLLAMA_CONTEXT_PREPARATION_FAILED",
+        { cause: error },
+      );
+    }
+  };
+  return async request => {
+    request.signal?.throwIfAborted();
+    if (request.load === false) return resolve(request);
+    const key = ollamaModelName(request.model);
+    const operation = (pending.get(key) ?? Promise.resolve()).catch(() => undefined).then(() => resolve(request));
+    pending.set(key, operation);
+    try {
+      return await operation;
+    } finally {
+      if (pending.get(key) === operation) pending.delete(key);
+    }
+  };
 }
 
 class OllamaAdapter implements ModelRuntimeAdapter {
@@ -1274,21 +1045,25 @@ class OllamaAdapter implements ModelRuntimeAdapter {
       providerProfile(
         "Ollama",
         baseURL,
-        models,
-        this.config.defaultContextWindow,
+        models.map(({ contextWindow: _catalogCapacity, ...model }) => model),
+        undefined,
         this.config.defaultMaxTokens,
         auth,
       );
     const discover = async (): Promise<ModelProfile[] | undefined> =>
       await discoverOpenAIModels(host, baseURL, undefined);
+    const preparedProvider = (models: ModelProfile[], dispose: () => Promise<void>): PreparedAdapter => ({
+      serviceReady: true,
+      ...(models.length > 0 ? {
+        provider: profile(models),
+        prepareRequest: ollamaContextPreparer(host, baseURL, models),
+      } : {}),
+      dispose,
+    });
 
     let models = await discover();
     if (models !== undefined) {
-      return {
-        serviceReady: true,
-        ...(models.length > 0 ? { provider: profile(models) } : {}),
-        dispose: async () => {},
-      };
+      return preparedProvider(models, async () => {});
     }
     if (lifecycle === "external") {
       host.log(
@@ -1341,11 +1116,7 @@ class OllamaAdapter implements ModelRuntimeAdapter {
         dispose: stopOwnedServer,
       };
     }
-    return {
-      serviceReady: true,
-      ...(models.length > 0 ? { provider: profile(models) } : {}),
-      dispose: stopOwnedServer,
-    };
+    return preparedProvider(models, stopOwnedServer);
   }
 }
 
@@ -1457,7 +1228,7 @@ export async function prepareModelRuntime(
         : []
     ),
     prepareRequest: async (request) => {
-      await requests.get(request.provider)?.(request);
+      return await requests.get(request.provider)?.(request);
     },
     dispose: async () => {
       if (disposed) return;

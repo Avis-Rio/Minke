@@ -335,11 +335,9 @@ test("LM Studio adapter enriches the authoritative OpenAI model catalog", async 
         {
           id: "qwen/qwen3-coder",
           name: "Qwen3 Coder",
-          contextWindow: 131072,
         },
         {
           id: "vision/model",
-          contextWindow: 32768,
           input: ["text", "image"],
         },
       ],
@@ -362,7 +360,7 @@ test("LM Studio adapter enriches the authoritative OpenAI model catalog", async 
   await prepared.dispose();
 });
 
-test("LM Studio leaves service loading policy untouched without a context override", async () => {
+test("LM Studio queries do not load; concurrent calls load once using service defaults", async () => {
   const model = "google/gemma-4-26b-a4b";
   const visionModel = "vision/unloaded";
   const embeddingModel = "nomic/embed-text";
@@ -437,7 +435,7 @@ test("LM Studio leaves service loading policy untouched without a context overri
       if (url.endsWith("/api/v1/models/load")) {
         const body = JSON.parse(init.body);
         mutations.push({ operation: "load", body });
-        loadedContext = body.context_length;
+        loadedContext = body.context_length ?? 32768;
         return json({
           type: "llm",
           instance_id: model,
@@ -476,10 +474,13 @@ test("LM Studio leaves service loading policy untouched without a context overri
     prepared.providers["lm-studio"].models.find(
       ({ id }) => id === model,
     ).contextWindow,
-    131_072,
+    undefined,
   );
+  assert.deepEqual(await prepared.prepareRequest({ provider: "lm-studio", model, load: false }), {});
+  assert.equal(loadedContext, 0);
+  assert.deepEqual(mutations, []);
 
-  await Promise.all([
+  const contexts = await Promise.all([
     prepared.prepareRequest({
       provider: "lm-studio",
       model,
@@ -490,9 +491,12 @@ test("LM Studio leaves service loading policy untouched without a context overri
     }),
   ]);
 
-  assert.equal(loadedContext, 0);
-  assert.equal(nativeListings, 1);
-  assert.deepEqual(mutations, []);
+  assert.equal(loadedContext, 32768);
+  assert.deepEqual(contexts, [{ contextWindow: 32768 }, { contextWindow: 32768 }]);
+  assert.deepEqual(mutations, [{ operation: "load", body: { model, echo_load_config: true } }]);
+  loadedContext = 8192;
+  assert.deepEqual(await prepared.prepareRequest({ provider: "lm-studio", model }), { contextWindow: 8192 });
+  assert.ok(nativeListings > 1, "capacity must be re-read after an external reload");
   await prepared.dispose();
 });
 
@@ -691,7 +695,7 @@ test("LM Studio follows the context of an externally loaded model", async () => 
   await prepared.dispose();
 });
 
-test("LM Studio expands an undersized model only when Minke started the service", async () => {
+test("LM Studio keeps actual capacity even with an override and a Minke-owned service", async () => {
   const model = "qwen/qwen3.8-27b";
   let running = false;
   let loadedContext = 4_608;
@@ -779,37 +783,22 @@ test("LM Studio expands an undersized model only when Minke started the service"
     host,
   );
 
-  await prepared.prepareRequest({
+  const actual = await prepared.prepareRequest({
     provider: "lm-studio",
     model,
   });
 
-  assert.equal(loadedContext, 32_768);
-  assert.deepEqual(mutations, [
-    {
-      operation: "unload",
-      body: { instance_id: model },
-    },
-    {
-      operation: "load",
-      body: {
-        model,
-        context_length: 32_768,
-        eval_batch_size: 512,
-        flash_attention: true,
-        offload_kv_cache_to_gpu: true,
-        echo_load_config: true,
-      },
-    },
-  ]);
+  assert.deepEqual(actual, { contextWindow: 4608 });
+  assert.equal(loadedContext, 4608);
+  assert.deepEqual(mutations, [], "existing models must never be resized to match a configured capacity");
   await prepared.dispose();
   assert.equal(running, true);
 });
 
-test("LM Studio restores an owned model when context expansion fails", async () => {
+test("LM Studio reports a failed initial load without unloading or retrying other configurations", async () => {
   const model = "qwen/qwen3.8-27b";
   let running = false;
-  let loadedContext = 4_608;
+  let loadedContext = 0;
   const loadContexts = [];
   const { host } = createHost({
     run: async (_candidates, args) => {
@@ -863,12 +852,11 @@ test("LM Studio restores an owned model when context expansion fails", async () 
       }
       const body = JSON.parse(init.body);
       if (url.endsWith("/api/v1/models/unload")) {
-        loadedContext = 0;
-        return json({ instance_id: model });
+        assert.fail("capacity preparation must not unload models");
       }
       if (url.endsWith("/api/v1/models/load")) {
         loadContexts.push(body.context_length);
-        if (body.context_length === 32_768) {
+        if (body.model === model) {
           return json(
             { error: "resource guard rejected the load" },
             { status: 500 },
@@ -907,12 +895,12 @@ test("LM Studio restores an owned model when context expansion fails", async () 
         error.code,
         "LM_STUDIO_CONTEXT_PREPARATION_FAILED",
       );
-      assert.match(error.message, /previous 4608-token configuration was restored/u);
+      assert.match(error.message, /could not confirm the loaded context/u);
       return true;
     },
   );
-  assert.deepEqual(loadContexts, [32_768, 4_608]);
-  assert.equal(loadedContext, 4_608);
+  assert.deepEqual(loadContexts, [undefined], "retired local overrides must not change service load parameters");
+  assert.equal(loadedContext, 0);
   await prepared.dispose();
 });
 
@@ -2106,6 +2094,62 @@ test("Ollama auto-start binds the configured endpoint", async () => {
   );
   await prepared.dispose();
 });
+
+test("Ollama resolves running capacity and serializes cold loads across latest aliases", async () => {
+  let context = 0;
+  let malformed = false;
+  const loads = [];
+  const { host } = createHost({ fetch: async (input, init = {}) => {
+    const path = new URL(input).pathname;
+    if (path === "/v1/models") return json({ data: [{ id: "qwen3:latest", context_window: 262144 }] });
+    if (path === "/api/ps") return json({ models: context || malformed
+      ? [{ name: "qwen3:latest", model: "qwen3:latest", context_length: malformed ? "4096" : context }] : [] });
+    assert.equal(path, "/api/generate");
+    loads.push(JSON.parse(init.body));
+    context = 4096;
+    return json({ done: true });
+  } });
+  const runtime = await prepareModelRuntime({ ollama: {
+    enabled: true, lifecycle: "external", defaultContextWindow: 262144,
+  } }, host);
+  assert.equal(runtime.providers.ollama.defaultContextWindow, undefined);
+  assert.equal(runtime.providers.ollama.models[0].contextWindow, undefined);
+  assert.deepEqual(await runtime.prepareRequest({ provider: "ollama", model: "qwen3", load: false }), {});
+  assert.deepEqual(loads, []);
+  const actual = await Promise.all(["qwen3", "qwen3:latest"].map(model =>
+    runtime.prepareRequest({ provider: "ollama", model })));
+  assert.deepEqual(actual, [{ contextWindow: 4096 }, { contextWindow: 4096 }]);
+  assert.deepEqual(loads, [{ model: "qwen3", prompt: "", stream: false }]);
+  context = 16384;
+  assert.deepEqual(await runtime.prepareRequest({ provider: "ollama", model: "qwen3" }), { contextWindow: 16384 });
+  malformed = true;
+  assert.deepEqual(await runtime.prepareRequest({ provider: "ollama", model: "qwen3", load: false }), {});
+  await assert.rejects(runtime.prepareRequest({ provider: "ollama", model: "qwen3" }), { code: "OLLAMA_CONTEXT_UNKNOWN" });
+  assert.equal(loads.length, 1, "malformed loaded state cannot trigger another load");
+  await runtime.dispose();
+});
+
+for (const outcome of ["load failure", "unconfirmed load", "ambiguous instances", "malformed listing"]) {
+  test(`Ollama does not invent a capacity or reload after ${outcome}`, async () => {
+    const loads = [];
+    const { host } = createHost({ fetch: async (input, init = {}) => {
+      const path = new URL(input).pathname;
+      if (path === "/v1/models") return json({ data: [{ id: "registry:11434/qwen:latest" }] });
+      if (path === "/api/ps") return json({ models: outcome === "ambiguous instances"
+        ? [{ name: "registry:11434/qwen:latest", context_length: 4096 }, { name: "registry:11434/qwen:latest", context_length: 8192 }]
+        : outcome === "malformed listing" ? [{}] : [] });
+      assert.equal(path, "/api/generate");
+      loads.push(JSON.parse(init.body));
+      return outcome === "load failure" ? new Response("load failed", { status: 500 }) : json({ done: true });
+    } });
+    const runtime = await prepareModelRuntime({ ollama: { enabled: true } }, host);
+    const request = { provider: "ollama", model: "registry:11434/qwen" };
+    assert.deepEqual(await runtime.prepareRequest({ ...request, load: false }), {});
+    await assert.rejects(runtime.prepareRequest(request), /context/i);
+    assert.equal(loads.length, outcome === "ambiguous instances" || outcome === "malformed listing" ? 0 : 1);
+    await runtime.dispose();
+  });
+}
 
 test("an unavailable Ollama adds no invalid empty provider", async () => {
   const { host, commands } = createHost();

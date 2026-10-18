@@ -7,6 +7,7 @@ import {
   type ModelRuntimeConfig,
   type ModelRuntimeHost,
   type ModelRuntimeRequest,
+  type ModelRuntimeContext,
   type PreparedModelRuntime,
   type ProviderProfile,
 } from "./core.ts";
@@ -340,7 +341,7 @@ export class LiveModelRuntime {
   /** Wait only for the request's owning service, leaving other routes usable. */
   async prepareRequest(
     request: ModelRuntimeRequest,
-  ): Promise<void> {
+  ): Promise<ModelRuntimeContext | void> {
     request.signal?.throwIfAborted();
     if (this.#disposeRequested) {
       throw new Error("model-runtime: live runtime is disposed");
@@ -360,7 +361,7 @@ export class LiveModelRuntime {
     }
     const component = this.#components.get(owner);
     if (component?.active) {
-      await component.prepared.prepareRequest(request);
+      return await waitForModelRuntime(component.prepared.prepareRequest(request), request.signal);
     }
   }
 

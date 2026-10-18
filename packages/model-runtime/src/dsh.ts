@@ -7,10 +7,7 @@ import type {} from "@deepseek-ai/cordis-plugin-loader";
 import type {} from "@deepseek-ai/dsh-settings";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { launchEnvironmentOf } from "@deepseek-ai/dsh-launch-environment";
-import type {
-  GenerateOptions,
-  StreamChunk,
-} from "@deepseek-ai/dsh-llm";
+import { LlmError, type LlmAdapter } from "@deepseek-ai/dsh-llm";
 import * as LlmPiAi from "@deepseek-ai/dsh-llm-pi-ai";
 import type {} from "@deepseek-ai/dsh-subprocess";
 import type {
@@ -20,10 +17,8 @@ import z from "@deepseek-ai/schemastery";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-  prepareModelRuntime,
   type CommandResult,
   type LmStudioRuntimeConfig,
-  ModelRuntimeRequestError,
   type ModelRuntimeConfig,
   type ModelRuntimeHost,
   type OpenAICompatibleRuntimeConfig,
@@ -37,6 +32,7 @@ import {
   waitForModelRuntime,
   type CommitModelRuntimeProviders,
 } from "./live.ts";
+import { ModelContextAdapter, type CaptureModelContext } from "./context-adapter.ts";
 import {
   externalRuntimeEnvironment,
 } from "./process-environment.ts";
@@ -50,9 +46,8 @@ export const inject = ["credentials", "llm", "subprocess"];
 
 export type Config = ModelRuntimeConfig & LlmPiAi.Config;
 
-// Capability defaults belong to each model service. The capacity fields below
-// are explicit operator overrides only and therefore intentionally have no
-// schema default.
+// Local context capacity and loading parameters belong to each model service.
+// Output limits remain explicit native pi-ai settings.
 const lmStudioConfig: z<LmStudioRuntimeConfig> = z
   .object({
     enabled: z.boolean().default(true),
@@ -62,7 +57,6 @@ const lmStudioConfig: z<LmStudioRuntimeConfig> = z
     baseURL: z.string().default(process.env.LM_STUDIO_BASE_URL ?? ""),
     command: z.string().default(process.env.MINKE_LM_STUDIO_COMMAND ?? ""),
     apiKeyEnv: z.string().role("credential-ref").default(""),
-    defaultContextWindow: z.number().step(1).min(1),
     defaultMaxTokens: z.number().step(1).min(1),
   });
 
@@ -84,7 +78,6 @@ const ollamaConfig: z<OllamaRuntimeConfig> = z
       .default(process.env.MINKE_OLLAMA_ENABLED === "1" && process.env.MINKE_OLLAMA_COMMAND ? "ensure-running" : "external"),
     baseURL: z.string().default(process.env.OLLAMA_BASE_URL ?? ""),
     command: z.string().default(process.env.MINKE_OLLAMA_COMMAND ?? ""),
-    defaultContextWindow: z.number().step(1).min(1),
     defaultMaxTokens: z.number().step(1).min(1),
   });
 
@@ -255,49 +248,6 @@ function createHost(
   };
 }
 
-function preparedStream(
-  prepared: Pick<
-    Awaited<ReturnType<typeof prepareModelRuntime>>,
-    "prepareRequest"
-  >,
-  options: GenerateOptions,
-  next: () => AsyncIterable<StreamChunk>,
-): AsyncIterable<StreamChunk> {
-  return (async function* (): AsyncIterable<StreamChunk> {
-    try {
-      await prepared.prepareRequest({
-        provider: options.provider,
-        model: options.model,
-        ...(options.signal === undefined
-          ? {}
-          : { signal: options.signal }),
-      });
-    } catch (error) {
-      const aborted = options.signal?.aborted === true;
-      const failure = {
-        message: aborted
-          ? "Local model request preparation was aborted"
-          : error instanceof Error
-            ? error.message
-            : String(error),
-        code: aborted
-          ? "ABORTED"
-          : error instanceof ModelRuntimeRequestError
-            ? error.code
-            : "LOCAL_MODEL_PREPARATION_FAILED",
-      };
-      yield {
-        type: "finish",
-        reason: aborted
-          ? { kind: "aborted", failure }
-          : { kind: "error", failure },
-      };
-      return;
-    }
-    yield* next();
-  })();
-}
-
 async function updatePiAiProviders(
   fiber: Fiber,
   providers: LlmPiAi.Options["providers"],
@@ -313,6 +263,22 @@ function configuredProviders(config: Config): NonNullable<LlmPiAi.Options["provi
   return structuredClone(config.providers.get()) as NonNullable<LlmPiAi.Options["providers"]>;
 }
 
+function composeProviders(
+  discovered: LiveModelRuntime["providers"],
+  config: Config,
+): NonNullable<LlmPiAi.Options["providers"]> {
+  // A failed local engine may have been stopped deliberately or run out of
+  // resources. Replaying the request can load it again. Use DSH's native
+  // policy to leave recovery to the next human request.
+  const local = Object.fromEntries(Object.entries(discovered).map(([id, profile]) => [
+    id,
+    id === "lm-studio" || id === "ollama"
+      ? { ...profile, retryPolicy: { mode: "normal" as const, maxRetries: 0 } }
+      : profile,
+  ]));
+  return { ...local, ...configuredProviders(config) };
+}
+
 /**
  * Mount configured model routes first, then discover local services in the
  * background. Only requests owned by those services wait for their readiness.
@@ -323,7 +289,69 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   });
   let committedProviders: LiveModelRuntime["providers"] = {};
   let publishedProviders = configuredProviders(config);
-  const adapterFiber = ctx.plugin(LlmPiAi, {
+  let publication = Promise.resolve();
+  let initialize!: (runtime: LiveModelRuntime) => void;
+  let initializationFailed!: (error: unknown) => void;
+  const ready = new Promise<LiveModelRuntime>((resolve, reject) => {
+    initialize = resolve;
+    initializationFailed = reject;
+  });
+  const ownedProviders = new Set(modelRuntimeProviderIds(config));
+  const configurationChanged = () => new LlmError(
+    "Model settings changed while resolving local capacity. Retry with the current settings.",
+    "LOCAL_MODEL_CONFIGURATION_CHANGED",
+  );
+  const capture: CaptureModelContext = async (request, captureNative) => {
+    request.signal?.throwIfAborted();
+    if (!ownedProviders.has(request.provider)) {
+      const value = await captureNative();
+      request.signal?.throwIfAborted();
+      return { value, context: undefined };
+    }
+    if (!Object.hasOwn(config.providers.get(), request.provider)) {
+      await waitForModelRuntime(ready, request.signal);
+    }
+    const publishing = publication;
+    await waitForModelRuntime(publishing, request.signal);
+    const generation = publishedProviders;
+    const configured = config.providers.get();
+    // Explicit profiles may point at a different endpoint. Only discovery-owned
+    // routes use the local runtime's capacity and readiness.
+    const explicit = Object.hasOwn(configured, request.provider);
+    const context = explicit ? undefined
+      : await (await waitForModelRuntime(ready, request.signal)).prepareRequest(request);
+    const value = await captureNative();
+    request.signal?.throwIfAborted();
+    if (generation !== publishedProviders || publishing !== publication ||
+        configured !== config.providers.get()) throw configurationChanged();
+    return { value, context };
+  };
+  const adapterFiber = ctx.plugin({
+    ...LlmPiAi,
+    apply(child: Context, nativeConfig: LlmPiAi.Config) {
+      const lifetime = new AbortController();
+      child.effect(() => () => lifetime.abort(configurationChanged()));
+      const captureCurrent: CaptureModelContext = (request, captureNative) => capture({
+        ...request,
+        signal: request.signal === undefined ? lifetime.signal
+          : AbortSignal.any([request.signal, lifetime.signal]),
+      }, captureNative);
+      const nativeLlm = child.llm;
+      const llm = new Proxy(nativeLlm, {
+        get(target, key) {
+          if (key === "registerAdapter") {
+            return (providers: string[], adapter: LlmAdapter) =>
+              target.registerAdapter(providers, new ModelContextAdapter(adapter, captureCurrent));
+          }
+          const value: unknown = Reflect.get(target, key, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      // Cordis's public scoped context keeps native settings, credentials and
+      // registration disposal on the original pi-ai child fiber.
+      LlmPiAi.apply(child.extend({ llm }), nativeConfig);
+    },
+  }, {
     providers: publishedProviders,
   });
   await adapterFiber.await();
@@ -334,19 +362,18 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     const raw = next();
     if (this !== ctx.fiber) return raw;
     const candidate = Config(raw as Config);
-    const native = { providers: { ...committedProviders, ...configuredProviders(candidate) } };
+    const native = { providers: composeProviders(committedProviders, candidate) };
     adapterFiber.ctx.waterfall(adapterFiber.ctx.fiber, "internal/config", native, () => native);
     return raw;
   });
   let disposed = false;
-  let publication = Promise.resolve();
   const publish = (providers?: LiveModelRuntime["providers"]): Promise<void> => {
     const next = publication.then(async () => {
       if (disposed) return;
       const local = providers ?? committedProviders;
       // The native Profile owns persisted provider settings. Explicit user
       // profiles take precedence over transient local discovery results.
-      const combined = { ...local, ...configuredProviders(config) };
+      const combined = composeProviders(local, config);
       const previous = publishedProviders;
       try {
         await updatePiAiProviders(adapterFiber, combined);
@@ -371,7 +398,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.on("loader/volatile-update", () => {
     void publish().catch(error => ctx.logger.warn("model-runtime: provider settings update failed", error));
   });
-  const ready = LiveModelRuntime.create(config, createHost(ctx, config))
+  void LiveModelRuntime.create(config, createHost(ctx, config))
     .then(async (prepared) => {
       if (!disposed && Object.keys(prepared.providers).length > 0) {
         try {
@@ -382,7 +409,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         }
       }
       return prepared;
-    });
+    }).then(initialize, initializationFailed);
   // Keep the child adapter alive until any in-flight publication and owned
   // service cleanup finish. Cordis disposes effects in reverse order.
   ctx.effect(() => async () => {
@@ -395,16 +422,6 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     if (!disposed) {
       ctx.logger.warn(`model-runtime: local service initialization failed: ${String(error)}`);
     }
-  });
-  const ownedProviders = new Set(modelRuntimeProviderIds(config));
-  ctx.on("llm/stream", (options, next) => {
-    if (!ownedProviders.has(options.provider)) return next();
-    return preparedStream({
-      async prepareRequest(request) {
-        const prepared = await waitForModelRuntime(ready, request.signal);
-        await prepared.prepareRequest(request);
-      },
-    }, options, next);
   });
   installModelRuntimeControl(ctx, {
     async reconfigure(...args) {
