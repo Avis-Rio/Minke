@@ -1079,7 +1079,12 @@ async function run() {
     await waitFor(() => nativeLocales.includes('en'), 'DSH locale bridge initializes the native window');
     assert.deepEqual(await rendererValue(window, '() => window.__DSH_LOCALE__.read()'), { languages: ['en-US'], preference: null });
     await writeFile(join(workspace, 'native-reference.txt'), 'Referenced through DSH Desktop host paths.');
-    await waitFor(() => rendererValue(window, '() => document.querySelector("input[type=file]") !== null'), 'native file picker input');
+    // DSH keeps the file input mounted while the workspace/session binding is
+    // still loading. Intake is ignored until the real editor becomes editable.
+    await waitFor(() => rendererValue(window, `() =>
+      document.querySelector('[data-composer-input]')?.isContentEditable === true &&
+      document.querySelector('input[type=file]')?.disabled === false
+    `), 'editable native file picker');
     window.webContents.debugger.attach('1.3');
     try {
       const { root } = await window.webContents.debugger.sendCommand('DOM.getDocument');
@@ -1548,7 +1553,9 @@ async function run() {
       return true;
     }`);
     await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-right-guide-entry="files"]')?.checkVisibility({ checkVisibilityCSS: true })`), 'DSH Files entry in the native Start tab');
-    assert.equal(await rendererValue(window, `() => document.querySelector('.minke-tabs-native-host:has(.minke-agent-browser__view)').inert`), true, 'the native Start tab hides the retained browser');
+    await waitFor(() => rendererValue(window, `() =>
+      document.querySelector('.minke-tabs-native-host:has(.minke-agent-browser__view)')?.inert === true
+    `), 'the native Start tab hides the retained browser');
     await rendererValue(window, `() => {
       document.querySelector('[data-sidebar-right-guide-entry="files"]').click();
       return true;
@@ -1668,7 +1675,18 @@ async function run() {
       const rect = host.getBoundingClientRect();
       const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
       return hit?.closest('[data-minke-tab-instance]') !== host;
-    }`), 'Settings dialog to cover the retained browser');
+    }`), 'Settings dialog to cover the retained browser').catch(async error => {
+      const state = await rendererValue(window, `() => {
+        const panel = document.querySelector('[role="dialog"][aria-modal="true"]');
+        const host = document.querySelector('.minke-tabs-native-host:has(.minke-agent-browser__view)');
+        const rect = host?.getBoundingClientRect();
+        const hit = rect && document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        return { focused: document.hasFocus(), active: document.activeElement?.outerHTML.slice(0, 300),
+          dialog: Boolean(panel), hostInert: host?.inert, hostRect: rect?.toJSON(),
+          hit: hit?.outerHTML.slice(0, 300) };
+      }`);
+      throw new Error(error.message + '; Settings state=' + JSON.stringify({ windowFocused: window.isFocused(), ...state }), { cause: error });
+    });
     assert.equal(await rendererValue(window, `() => document.querySelector('.minke-agent-browser__guest') === window.__minkeTestGuest`), true);
     window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
     window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });

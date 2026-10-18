@@ -882,8 +882,9 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
   const checkDiscoveryGuest = async () => {
     const id = await waitFor(() => rendererValue(window, `() => {
       const view = document.querySelector('.minke-plugins-page webview');
-      if (!view?.checkVisibility({ checkVisibilityCSS: true })) return false;
+      if (!view?.checkVisibility({ checkVisibilityCSS: true }) || view.closest('[inert]')) return false;
       const rect = view.getBoundingClientRect();
+      if (document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) !== view) return false;
       try { return rect.width > 100 && rect.height > 100 && view.getURL() === ${JSON.stringify(fixtureUrl)} && view.getWebContentsId(); }
       catch { return false; }
     }`), 'visible discovery fixture').catch(async error => {
@@ -966,18 +967,31 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
       assert.equal(await rendererValue(window, `() => document.querySelector('[data-plugin-panel]') !== null`), true,
         'DSH scopes the Sidebar shortcut to a mounted Session');
       await click(opener);
-      const startId = await waitFor(() => rendererValue(window, `() =>
-        document.querySelector('[data-sidebar-right-guide]')?.closest('[data-dockkit-pane]')
-          ?.querySelector('[data-dockkit-tab][aria-selected="true"]')?.dataset.dockkitTab`), 'Start tab opened from Plugins');
+      const startId = await waitFor(() => rendererValue(window, `() => {
+        const guide = [...document.querySelectorAll('[data-sidebar-right-guide]')]
+          .find(candidate => candidate.checkVisibility({ checkVisibilityCSS: true }) && !candidate.closest('[inert]'));
+        const content = guide?.closest('[data-dockkit-content]');
+        const selected = content?.querySelector('[data-dockkit-tab][aria-selected="true"]');
+        return selected?.dataset.dockkitTab === content?.dataset.dockkitContent && content?.dataset.dockkitContent;
+      }`), 'selected Start tab opened from Plugins');
       await click(`[data-minke-tab-title="${discoveryId}"]`);
       assert.equal(await checkDiscoveryGuest(), discoveryGuestId, 'returning to the Session retains the browser instance');
       await pressShortcut('p', modifiers);
       await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-right-panel][data-sidebar-right-open]') === null`), 'shared Sidebar shortcut collapses the Session panel');
       await pressShortcut('p', modifiers);
+      await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-right-panel][data-sidebar-right-open]') !== null`), 'shared Sidebar shortcut reopens the Session panel');
       assert.equal(await checkDiscoveryGuest(), discoveryGuestId, 'shared Sidebar shortcut restores the selected native tab');
       await click(`[data-dockkit-tab="${startId}"]`);
+      await waitFor(() => rendererValue(window, `() => document.querySelector('[data-dockkit-tab="${startId}"][aria-selected="true"]') !== null`), 'restored Start tab is selected');
     }
-    await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-right-guide-entry="terminal"]')?.checkVisibility({ checkVisibilityCSS: true }) && document.querySelector('[data-sidebar-right-guide-entry="files"]')?.checkVisibility({ checkVisibilityCSS: true })`), entry + ' opens the native Start entries');
+    await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-right-guide-entry="terminal"]')?.checkVisibility({ checkVisibilityCSS: true }) && document.querySelector('[data-sidebar-right-guide-entry="files"]')?.checkVisibility({ checkVisibilityCSS: true })`), entry + ' opens the native Start entries').catch(async error => {
+      const state = await rendererValue(window, `() => ({
+        panels: [...document.querySelectorAll('[data-sidebar-right-panel]')].map(panel => ({open: panel.hasAttribute('data-sidebar-right-open'), visible: panel.checkVisibility({ checkVisibilityCSS: true })})),
+        guides: [...document.querySelectorAll('[data-sidebar-right-guide]')].map(guide => ({id: guide.closest('[data-dockkit-content]')?.dataset.dockkitContent, visible: guide.checkVisibility({ checkVisibilityCSS: true })})),
+        selected: [...document.querySelectorAll('[data-dockkit-tab][aria-selected="true"]')].map(tab => ({id: tab.dataset.dockkitTab, title: tab.textContent}))
+      })`);
+      throw new Error(error.message + '; native Start state=' + JSON.stringify(state), {cause: error});
+    });
     await click('[data-sidebar-right-guide-entry="terminal"] button');
     const openedTerminal = await runNativeShell('dsh-terminal-from-panel.txt', entry === 'header' ? 'Plugins' : 'Shortcut');
     await click(`[data-dockkit-tab="${openedTerminal}"] [data-dockkit-tab-close]`);
