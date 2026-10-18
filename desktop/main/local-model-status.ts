@@ -12,16 +12,17 @@ const STATUS_TIMEOUT_MS = 2_000;
 interface StatusProbeDependencies {
   fetch?: typeof fetch;
   run?: (command: string, args: string[]) => Promise<string>;
+  environment?: NodeJS.ProcessEnv;
 }
 
-function runStatusCommand(command: string, args: string[]): Promise<string> {
+function runStatusCommand(command: string, args: string[], environment: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(command, args, {
       timeout: STATUS_TIMEOUT_MS,
       maxBuffer: 16 * 1024,
       windowsHide: true,
       encoding: "utf8",
-      env: externalRuntimeEnvironment(process.env),
+      env: externalRuntimeEnvironment(environment),
     }, (error, stdout) => {
       if (error !== null) reject(error);
       else resolve(stdout);
@@ -41,7 +42,7 @@ export function createLocalModelStatusProbe(
   dependencies: StatusProbeDependencies = {},
 ): (id: LocalModelRuntimeId) => Promise<ModelRuntimeServiceState> {
   const request = dependencies.fetch ?? globalThis.fetch;
-  const run = dependencies.run ?? runStatusCommand;
+  const run = dependencies.run ?? ((command, args) => runStatusCommand(command, args, dependencies.environment ?? process.env));
   return async (id) => {
     // The CLI knows LM Studio's selected port, including non-default ports.
     if (id === "lmStudio" && commands.lmStudio !== undefined) {

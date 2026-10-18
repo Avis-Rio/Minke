@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-  harnessWebArguments,
+  harnessHostArguments,
   readHarnessRuntimeLayout,
 } from "@minke/desktop/main/harness-launch.ts";
 import {
@@ -121,20 +121,33 @@ test("desktop and smoke launch Harness through one staged layout contract", asyn
         ),
         runtimeBin: join(runtimeRoot, "bin"),
       });
-      assert.deepEqual(harnessWebArguments(layout), [
+      assert.deepEqual(harnessHostArguments(layout), [
         "--expose-internals",
         join(runtimeRoot, "index.mjs"),
-        "web",
-        "--patch",
+        "--minke-desktop-host",
         layout.productPatch,
-        "--no-open",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "0",
+        layout.pnpmEntry,
       ]);
     },
   );
+});
+
+test("stopping while the launch layout is loading cannot start a late Host process", async () => {
+  await withRuntime({ schemaVersion: 3, productBundle: {
+    packageName: "@lencx/minke-harness-overlay", patch: "cordis.patch.yml",
+  } }, async runtimeRoot => {
+    const runtime = new HarnessRuntime({
+      runtimeRoot, dshHome: join(runtimeRoot, "home"), electronExecutable: process.execPath,
+      modelRuntimes: { lmStudio: { enabled: false }, ollama: { enabled: false } },
+      pluginManagement: { safeMode: false, disabledPlugins: [] },
+      onUnexpectedExit: () => { throw new Error("must not spawn after stop"); },
+    });
+    const started = runtime.start();
+    const concurrent = assert.rejects(runtime.start(), /already running/u);
+    await runtime.stop();
+    await assert.rejects(started, /stopped during startup/u);
+    await concurrent;
+  });
 });
 
 test("the staged layout contract rejects unsafe product metadata", async () => {
@@ -712,8 +725,9 @@ test("crash recovery keeps the persisted model settings when persistence and liv
           '  `${process.env.MINKE_LM_STUDIO_ENABLED}\\n`,',
           ");",
           `process.stdout.write(${JSON.stringify(`dsh web: ${HARNESS_AUTHENTICATED_URL.slice(0, -12)}`)});`,
-          `setTimeout(() => process.stdout.write(${JSON.stringify(`${HARNESS_AUTHENTICATED_URL.slice(-12)}\n`)}), 5);`,
+          `setTimeout(() => { process.stdout.write(${JSON.stringify(`${HARNESS_AUTHENTICATED_URL.slice(-12)}\n`)}); process.send({ type: "ready", url: ${JSON.stringify(HARNESS_AUTHENTICATED_URL)} }); }, 5);`,
           'process.on("message", (message) => {',
+          '  if (message?.type === "shutdown") { process.send({ type: "shutdown-complete" }, () => process.disconnect()); return; }',
           '  if (message?.type !== "model-runtimes/reconfigure") return;',
           '  const response = {',
           "    channel: message.channel,",
@@ -870,9 +884,12 @@ test("targeted service settings update only their own crash-recovery launch stat
         await appendFile(join(process.env.DSH_HOME, "launches.jsonl"), JSON.stringify({
           lmStudio: process.env.MINKE_LM_STUDIO_ENABLED,
           ollama: process.env.MINKE_OLLAMA_ENABLED,
+          loginMarker: process.env.LOGIN_SHELL_FIXTURE,
         }) + "\\n");
         process.stdout.write(${JSON.stringify(`dsh web: ${HARNESS_AUTHENTICATED_URL}\n`)});
+        process.send({ type: "ready", url: ${JSON.stringify(HARNESS_AUTHENTICATED_URL)} });
         process.on("message", async (message) => {
+          if (message?.type === "shutdown") { process.send({ type: "shutdown-complete" }, () => process.disconnect()); return; }
           if (message?.type !== "model-runtimes/reconfigure") return;
           await appendFile(join(process.env.DSH_HOME, "requests.jsonl"), JSON.stringify(message) + "\\n");
           process.send({
@@ -884,6 +901,7 @@ test("targeted service settings update only their own crash-recovery launch stat
     ]);
     runtime = new HarnessRuntime({
       runtimeRoot, dshHome, electronExecutable: process.execPath,
+      environment: { ...process.env, LOGIN_SHELL_FIXTURE: "configured-shell" },
       modelRuntimes: { lmStudio: { enabled: false }, ollama: { enabled: false } },
       pluginManagement: { safeMode: false, disabledPlugins: [] },
       startupTimeoutMs: 2_000, shutdownTimeoutMs: 2_000, modelRuntimeControlTimeoutMs: 2_000,
@@ -903,8 +921,8 @@ test("targeted service settings update only their own crash-recovery launch stat
     await runtime.start();
     const readJsonLines = async (name) => (await readFile(join(dshHome, name), "utf8")).trim().split("\n").map(JSON.parse);
     assert.deepEqual(await readJsonLines("launches.jsonl"), [
-      { lmStudio: "0", ollama: "0" },
-      { lmStudio: "0", ollama: "1" },
+      { lmStudio: "0", ollama: "0", loginMarker: "configured-shell" },
+      { lmStudio: "0", ollama: "1", loginMarker: "configured-shell" },
     ]);
     const requests = await readJsonLines("requests.jsonl");
     assert.deepEqual(requests.map(({ runtimeId, mode }) => ({ runtimeId, mode })), [
@@ -1405,4 +1423,36 @@ test("the navigation environment override reaches the actual loading timer", asy
   fixture.finish();
   assert.equal(await outcome, HARNESS_ORIGIN);
   assert.equal(fixture.counts().stops, 0);
+});
+
+test("nonzero Host shutdown exits publish a retained teardown diagnostic", async () => {
+  await withRuntime({ schemaVersion: 3, productBundle: {
+    packageName: "@lencx/minke-harness-overlay", patch: "cordis.patch.yml",
+  } }, async runtimeRoot => {
+    const patch = join(runtimeRoot, "node_modules", "@lencx", "minke-harness-overlay");
+    const pnpm = join(runtimeRoot, "node_modules", "pnpm", "bin");
+    const home = join(runtimeRoot, "home");
+    await Promise.all([patch, pnpm, home, join(runtimeRoot, "bin")].map(path => mkdir(path, { recursive: true })));
+    await Promise.all([
+      writeFile(join(patch, "cordis.patch.yml"), ""), writeFile(join(pnpm, "pnpm.cjs"), ""),
+      writeFile(join(runtimeRoot, "index.mjs"), `
+        process.send({ type: "ready", url: ${JSON.stringify(HARNESS_AUTHENTICATED_URL)} });
+        process.on("message", message => { if (message.type === "shutdown") process.exit(7); });
+      `),
+    ]);
+    const diagnostics = [];
+    const runtime = new HarnessRuntime({ runtimeRoot, dshHome: home, electronExecutable: process.execPath,
+      modelRuntimes: { lmStudio: { enabled: false }, ollama: { enabled: false } },
+      pluginManagement: { safeMode: false, disabledPlugins: [] }, startupTimeoutMs: 2_000, shutdownTimeoutMs: 2_000,
+      onUnexpectedExit: () => { throw new Error("requested shutdown is not a running crash"); },
+      onShutdownDiagnostic: error => diagnostics.push(error),
+    });
+    try {
+      await runtime.start();
+      await runtime.stop();
+      assert.equal(diagnostics.length, 1);
+      assert.match(diagnostics[0].message, /exit 7.*acknowledged false/);
+      assert.doesNotMatch(diagnostics[0].message, new RegExp(HARNESS_LAUNCH_TOKEN));
+    } finally { await runtime.stop(); }
+  });
 });

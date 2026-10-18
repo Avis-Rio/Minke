@@ -29,7 +29,7 @@ import {
   AGENT_BROWSER_PROTOCOL_VERSION,
 } from "@minke/harness-overlay/agent-browser-contract.ts";
 import {
-  harnessWebArguments,
+  harnessHostArguments,
   readHarnessRuntimeLayout,
   type HarnessRuntimeLayout,
 } from "./harness-launch.ts";
@@ -43,14 +43,12 @@ import type {
   AgentBrowserBinding,
   AgentBrowserRuntime,
 } from "./agent-browser";
+import { HarnessHostChannel, redactLaunchTokens, type DesktopQuitInspection } from "./harness-host-channel.ts";
 import { resolveHarnessTimeout } from "./harness-timeout.ts";
 
-const READY_PATTERN =
-  /dsh web:\s+(http:\/\/[^\s)]+)(?=\s|\))/u;
 const LAUNCH_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
-const TOKEN_QUERY_VALUE_PATTERN = /([?&]token=)[^&\s)]*/giu;
 const MAX_CAPTURED_OUTPUT = 64 * 1024;
-const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10_000;
 
 export interface HarnessRuntimeEndpoint {
   /** Clean loopback origin safe for persistence, diagnostics, and proxies. */
@@ -71,11 +69,13 @@ export interface HarnessRuntimeOptions {
   runtimeRoot: string;
   dshHome: string;
   electronExecutable: string;
+  environment?: NodeJS.ProcessEnv;
   modelRuntimes: LocalModelRuntimeLaunchOptions;
   pluginManagement: PluginManagementSettings;
   webSearch: WebSearchSettings;
   agentBrowser?: Pick<AgentBrowserRuntime, "bindChild">;
   onUnexpectedExit(exit: HarnessRuntimeExit): void;
+  onShutdownDiagnostic?(error: Error): void;
   startupTimeoutMs?: number;
   shutdownTimeoutMs?: number;
   controlTimeoutMs?: number;
@@ -201,9 +201,11 @@ export class HarnessRuntime {
   #control: HarnessControlChannel | undefined;
   #agentBrowserBinding: AgentBrowserBinding | undefined;
   #output = "";
-  #readinessOutput = "";
-  #capturingReadiness = false;
+  #rawOutput = "";
+  #host: HarnessHostChannel | undefined;
+  #stopPromise: Promise<void> | undefined;
   #stopping = false;
+  #starting = false;
   #ready = false;
 
   constructor(options: HarnessRuntimeOptions) {
@@ -217,12 +219,19 @@ export class HarnessRuntime {
     );
   }
 
-  async start(): Promise<HarnessRuntimeEndpoint> {
-    if (this.#child !== undefined) {
-      throw new Error("Harness runtime is already running");
+  start(): Promise<HarnessRuntimeEndpoint> {
+    if (this.#starting || this.#child !== undefined) {
+      return Promise.reject(new Error("Harness runtime is already running"));
     }
+    this.#starting = true;
+    this.#stopping = false;
+    this.#stopPromise = undefined;
+    return this.#start().finally(() => { this.#starting = false; });
+  }
 
+  async #start(): Promise<HarnessRuntimeEndpoint> {
     const layout = await readHarnessRuntimeLayout(this.#options.runtimeRoot);
+    if (this.#stopping) throw new Error("Harness stopped during startup");
     await Promise.all([
       access(layout.entryPath),
       access(layout.pnpmEntry),
@@ -230,28 +239,29 @@ export class HarnessRuntime {
       access(layout.productPatch),
     ]);
     await mkdir(this.#options.dshHome, { recursive: true });
+    if (this.#stopping) throw new Error("Harness stopped during startup");
 
     this.#output = "";
-    this.#readinessOutput = "";
-    this.#capturingReadiness = true;
-    this.#stopping = false;
+    this.#rawOutput = "";
     this.#ready = false;
 
     const child = spawn(
       this.#options.electronExecutable,
-      harnessWebArguments(layout),
+      harnessHostArguments(layout),
       {
         cwd: this.#options.dshHome,
         detached: process.platform !== "win32",
         env: harnessRuntimeEnvironment(layout, {
           ...this.#options,
           modelRuntimes: this.#modelRuntimes,
-        }),
+        }, this.#options.environment),
         stdio: ["ignore", "pipe", "pipe", "ipc"],
         windowsHide: true,
       },
     );
     this.#child = child;
+    const host = new HarnessHostChannel(child, this.#startupTimeoutMs, () => this.#output);
+    this.#host = host;
     this.#control = new HarnessControlChannel(
       child,
       this.#options.controlTimeoutMs,
@@ -276,15 +286,23 @@ export class HarnessRuntime {
       if (this.#agentBrowserBinding === agentBrowserBinding) {
         this.#agentBrowserBinding = undefined;
       }
-      const exit = { code, signal, output: this.#output };
+      const exit = { code, signal, output: host.diagnostic ?? this.#output };
+      host.dispose();
+      if (this.#host === host) this.#host = undefined;
       if (this.#ready && !this.#stopping) {
         this.#options.onUnexpectedExit(exit);
       }
     });
 
-    const endpoint = await this.#waitUntilReady(child);
-    this.#ready = true;
-    return endpoint;
+    try {
+      const endpoint = parseHarnessRuntimeEndpoint(await host.ready);
+      if (this.#stopping || this.#child !== child) throw new Error("Harness stopped during startup");
+      this.#ready = true;
+      return endpoint;
+    } catch (error) {
+      await this.stop();
+      throw error;
+    }
   }
 
   /** Replace trusted remote authorities without restarting Harness. */
@@ -377,21 +395,49 @@ export class HarnessRuntime {
     return operation;
   }
 
-  async stop(): Promise<void> {
+  /** Undefined before readiness; a missing answer from a ready Host is an error. */
+  inspectQuit(): Promise<DesktopQuitInspection> | undefined {
+    if (!this.#ready) return undefined;
+    return this.#host?.inspectQuit() ?? Promise.reject(new Error("Desktop Host is unavailable"));
+  }
+
+  stop(): Promise<void> {
+    this.#stopping = true;
+    if (this.#stopPromise !== undefined) return this.#stopPromise;
+    const operation = this.#stop();
+    this.#stopPromise = operation;
+    void operation.catch(() => {
+      if (this.#stopPromise === operation) this.#stopPromise = undefined;
+    });
+    return operation;
+  }
+
+  async #stop(): Promise<void> {
     const child = this.#child;
     if (child === undefined) return;
-
     this.#stopping = true;
-    this.#signalProcessTree(child, "SIGTERM");
-    const exited = await this.#waitForExit(
-      child,
-      this.#options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
-    );
+    const host = this.#host;
+    host?.requestShutdown();
+    const graceful = await this.#waitForExit(child,
+      this.#options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS);
+    let exited = graceful;
+    if (!exited) {
+      this.#signalProcessTree(child, "SIGTERM");
+      exited = await this.#waitForExit(child, 5_000);
+    }
     if (!exited) {
       this.#signalProcessTree(child, "SIGKILL");
-      await this.#waitForExit(child, 1_000);
+      exited = await this.#waitForExit(child, 1_000);
+    }
+    if (!exited) throw new Error("Harness did not exit after forced termination");
+    if (!graceful || !host?.shutdownCompleted || child.exitCode !== 0) {
+      const error = new Error(`Harness teardown incomplete (exit ${String(child.exitCode)}, signal ${String(child.signalCode)}, acknowledged ${String(host?.shutdownCompleted ?? false)}, graceful deadline exceeded ${String(!graceful)})\n${host?.diagnostic ?? this.#output}`);
+      console.warn(error);
+      this.#options.onShutdownDiagnostic?.(error);
     }
     if (this.#child === child) this.#child = undefined;
+    host?.dispose();
+    if (this.#host === host) this.#host = undefined;
     this.#control?.dispose();
     this.#control = undefined;
     this.#agentBrowserBinding?.dispose();
@@ -400,84 +446,8 @@ export class HarnessRuntime {
   }
 
   #capture(chunk: string): void {
-    if (this.#capturingReadiness) {
-      this.#readinessOutput =
-        `${this.#readinessOutput}${chunk}`.slice(-MAX_CAPTURED_OUTPUT);
-      this.#output = redactLaunchTokens(this.#readinessOutput);
-      return;
-    }
-    this.#output = redactLaunchTokens(
-      `${this.#output}${chunk}`,
-    ).slice(-MAX_CAPTURED_OUTPUT);
-  }
-
-  async #waitUntilReady(
-    child: ChildProcess,
-  ): Promise<HarnessRuntimeEndpoint> {
-    const timeoutMs = this.#startupTimeoutMs;
-
-    return await new Promise<HarnessRuntimeEndpoint>(
-      (resolvePromise, reject) => {
-        let settled = false;
-
-        const finish = (
-          error?: Error,
-          endpoint?: HarnessRuntimeEndpoint,
-        ) => {
-          if (settled) return;
-          settled = true;
-          this.#capturingReadiness = false;
-          this.#readinessOutput = "";
-          clearTimeout(timeout);
-          child.stdout?.off("data", inspect);
-          child.stderr?.off("data", inspect);
-          child.off("error", onError);
-          child.off("exit", onExit);
-          if (error !== undefined) reject(error);
-          else resolvePromise(endpoint as HarnessRuntimeEndpoint);
-        };
-
-        const inspect = () => {
-          const match = READY_PATTERN.exec(this.#readinessOutput);
-          if (match?.[1] === undefined) return;
-          try {
-            finish(
-              undefined,
-              parseHarnessRuntimeEndpoint(match[1]),
-            );
-          } catch (error) {
-            finish(
-              error instanceof Error ? error : new Error(String(error)),
-            );
-          }
-        };
-        const onError = (error: Error) => finish(error);
-        const onExit = (
-          code: number | null,
-          signal: NodeJS.Signals | null,
-        ) =>
-          finish(
-            new Error(
-              `Harness exited before readiness (code ${String(code)}, signal ${String(signal)})\n${this.#output}`,
-            ),
-          );
-        const timeout = setTimeout(
-          () =>
-            finish(
-              new Error(
-                `Harness did not become ready within ${String(timeoutMs)} ms\n${this.#output}`,
-              ),
-            ),
-          timeoutMs,
-        );
-
-        child.stdout?.on("data", inspect);
-        child.stderr?.on("data", inspect);
-        child.once("error", onError);
-        child.once("exit", onExit);
-        inspect();
-      },
-    );
+    this.#rawOutput = `${this.#rawOutput}${chunk}`.slice(-MAX_CAPTURED_OUTPUT);
+    this.#output = redactLaunchTokens(this.#rawOutput);
   }
 
   #signalProcessTree(
@@ -582,11 +552,4 @@ export function parseHarnessRuntimeEndpoint(
       "Harness published an invalid authenticated readiness URL",
     );
   }
-}
-
-function redactLaunchTokens(value: string): string {
-  return value.replace(
-    TOKEN_QUERY_VALUE_PATTERN,
-    "$1<redacted>",
-  );
 }

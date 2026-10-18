@@ -48,19 +48,14 @@ export async function readHarnessRuntimeLayout(
   };
 }
 
-export function harnessWebArguments(
-  layout: Pick<HarnessRuntimeLayout, "entryPath" | "productPatch">,
+export function harnessHostArguments(
+  layout: Pick<HarnessRuntimeLayout, "entryPath" | "productPatch" | "pnpmEntry">,
 ): string[] {
   return [
     "--expose-internals",
     layout.entryPath,
-    "web",
-    "--patch",
+    "--minke-desktop-host",
     layout.productPatch,
-    "--no-open",
-    "--host",
-    "127.0.0.1",
-    "--port",
-    "0",
+    layout.pnpmEntry,
   ];
 }

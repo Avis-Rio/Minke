@@ -11,6 +11,8 @@ export function prepareDesktopApplication(
   app: Pick<
     App,
     | "getPath"
+    | "getAppPath"
+    | "isPackaged"
     | "quit"
     | "requestSingleInstanceLock"
     | "setName"

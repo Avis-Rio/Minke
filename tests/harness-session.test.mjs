@@ -129,6 +129,59 @@ test("Harness permission wiring applies the same policy to checks and requests",
   );
 });
 
+test("microphone policy rejects video, frames, popups and other origins", () => {
+  const active = {};
+  const request = { permission: "media", candidateUrl: HARNESS_ORIGIN, harnessUrl: HARNESS_ORIGIN,
+    requestingWebContents: active, activeWebContents: active, isMainFrame: true, mediaTypes: ["audio"] };
+  assert.equal(canGrantHarnessPermission(request), true);
+  for (const change of [
+    { mediaTypes: [] }, { mediaTypes: undefined }, { mediaTypes: ["video"] },
+    { mediaTypes: ["audio", "video"] }, { mediaTypes: ["unknown"] },
+    { isMainFrame: false }, { isMainFrame: undefined },
+    { requestingWebContents: {} }, { activeWebContents: undefined },
+    { candidateUrl: "https://example.com" },
+  ]) assert.equal(canGrantHarnessPermission({ ...request, ...change }), false);
+});
+
+test("microphone wiring requests OS consent and rechecks the window after consent", async () => {
+  let check, request, granted = false, askCount = 0, decide;
+  let url = HARNESS_ORIGIN;
+  const contents = { isDestroyed: () => false, getURL: () => url };
+  installHarnessPermissionPolicy({
+    setPermissionCheckHandler(handler) { check = handler; },
+    setPermissionRequestHandler(handler) { request = handler; },
+  }, {
+    harnessUrl: () => HARNESS_ORIGIN,
+    activeWebContents: () => contents,
+    microphone: {
+      isGranted: () => granted,
+      request: async () => { askCount++; return await new Promise(resolve => { decide = resolve; }); },
+    },
+  });
+  const details = { requestingUrl: HARNESS_ORIGIN, isMainFrame: true, mediaTypes: ["audio"] };
+  assert.equal(check(contents, "media", HARNESS_ORIGIN, { isMainFrame: true, mediaType: "audio" }), false);
+  const capture = () => new Promise(resolve => request(contents, "media", resolve, details));
+  let result = capture();
+  await Promise.resolve();
+  decide(true);
+  assert.equal(await result, true);
+  granted = true;
+  assert.equal(check(contents, "media", HARNESS_ORIGIN, { isMainFrame: true, mediaType: "audio" }), true);
+  result = capture();
+  await Promise.resolve();
+  url = "https://example.com";
+  decide(true);
+  assert.equal(await result, false);
+  url = HARNESS_ORIGIN;
+  result = capture();
+  await Promise.resolve();
+  decide(false);
+  assert.equal(await result, false);
+  assert.equal(await new Promise(resolve => request(contents, "media", resolve,
+    { ...details, mediaTypes: ["video"] })), false);
+  assert.equal(askCount, 3);
+});
+
 test("Harness restarts without a window and a later window attaches to it", async () => {
   const events = [];
   const lifecycle = new HarnessLifecycle({
