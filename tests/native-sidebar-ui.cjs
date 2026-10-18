@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const { readFile, writeFile } = require('node:fs/promises');
 const { join } = require('node:path');
-const { nativeTheme, webContents } = require('electron');
+const { nativeTheme, screen, webContents } = require('electron');
 const { fillsFullscreenViewport } = require('./support/sidebar-geometry.cjs');
 const { verifyWindowDrag, observeWindowDragRecall, verifyWindowDragRecall } = require('./window-drag-ui.cjs');
 
@@ -12,7 +12,13 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
   // Window creation can be clamped to the runner's work area. The split-pane
   // scenarios need the desktop viewport; narrow layouts are exercised below.
   window.setContentSize(1280, 800);
-  await waitFor(() => rendererValue(window, `() => innerWidth === 1280 && innerHeight === 800`), 'desktop Sidebar viewport');
+  await waitFor(() => rendererValue(window, `() => innerWidth === 1280 && innerHeight === 800`), 'desktop Sidebar viewport').catch(async error => {
+    const viewport = await rendererValue(window, `() => ({width: innerWidth, height: innerHeight, scale: devicePixelRatio})`);
+    throw new Error(error.message + '; window=' + JSON.stringify({
+      contentSize: window.getContentSize(), viewport, zoom: window.webContents.getZoomFactor(),
+      workArea: screen.getDisplayMatching(window.getBounds()).workArea,
+    }), { cause: error });
+  });
   await writeFile(join(workspace, 'sidebar-code.ts'), Array.from({ length: 180 }, (_, index) =>
     `export const value${index} = ${JSON.stringify('Native code preview '.repeat(16))};`).join('\n'));
   const pressEnter = () => {
@@ -83,8 +89,16 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
       throw new Error(`Click target unavailable: ${JSON.stringify({ selector, index, targets })}`, { cause: error });
     });
     if (!window.isFocused()) await focusWindow();
-    window.webContents.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
-    window.webContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
+    // Use the same acknowledged pointer sequence as the native drag test
+    // before checking the resulting control or tab state.
+    const input = window.webContents.debugger;
+    input.attach('1.3');
+    try {
+      await input.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });
+      await input.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 });
+    } finally {
+      input.detach();
+    }
   };
   const assertHeaderAlignment = async state => {
     await verifyWindowDrag({ window, rendererValue }, state);
@@ -981,8 +995,29 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
       await pressShortcut('p', modifiers);
       await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-right-panel][data-sidebar-right-open]') !== null`), 'shared Sidebar shortcut reopens the Session panel');
       assert.equal(await checkDiscoveryGuest(), discoveryGuestId, 'shared Sidebar shortcut restores the selected native tab');
+      await rendererValue(window, `() => {
+        window.__minkeStartPointerEvents = [];
+        window.__minkeStartPointerObserver = new AbortController();
+        for (const type of ['pointerdown', 'pointerup', 'pointercancel', 'click']) {
+          document.addEventListener(type, event => {
+            window.__minkeStartPointerEvents.push({ type, trusted: event.isTrusted,
+              target: event.target.tagName, tab: event.target.closest('[data-dockkit-tab]')?.dataset.dockkitTab,
+              close: event.target.closest('[data-dockkit-tab-close]')?.dataset.dockkitTabClose,
+              x: event.clientX, y: event.clientY });
+          }, { capture: true, signal: window.__minkeStartPointerObserver.signal });
+        }
+        return true;
+      }`);
       await click(`[data-dockkit-tab="${startId}"]`);
-      await waitFor(() => rendererValue(window, `() => document.querySelector('[data-dockkit-tab="${startId}"][aria-selected="true"]') !== null`), 'restored Start tab is selected');
+      await waitFor(() => rendererValue(window, `() => document.querySelector('[data-dockkit-tab="${startId}"][aria-selected="true"]') !== null`), 'restored Start tab is selected').catch(async error => {
+        const state = await rendererValue(window, `() => {
+          const tab = document.querySelector('[data-dockkit-tab="${startId}"]');
+          return { exists: Boolean(tab), selected: tab?.getAttribute('aria-selected'), focused: document.hasFocus(),
+            rect: tab?.getBoundingClientRect().toJSON(), pointerEvents: window.__minkeStartPointerEvents,
+            tabs: [...document.querySelectorAll('[data-dockkit-tab]')].map(node => ({id: node.dataset.dockkitTab, selected: node.getAttribute('aria-selected'), title: node.textContent})) };
+        }`);
+        throw new Error(error.message + '; Start click=' + JSON.stringify(state), { cause: error });
+      }).finally(() => rendererValue(window, `() => { window.__minkeStartPointerObserver.abort(); return true; }`));
     }
     await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-right-guide-entry="terminal"]')?.checkVisibility({ checkVisibilityCSS: true }) && document.querySelector('[data-sidebar-right-guide-entry="files"]')?.checkVisibility({ checkVisibilityCSS: true })`), entry + ' opens the native Start entries').catch(async error => {
       const state = await rendererValue(window, `() => ({

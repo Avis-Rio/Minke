@@ -932,6 +932,9 @@ async function run() {
       ...macOSWindowOptions(),
       width: 1_280,
       height: 800,
+      // Hosted macOS runners can have a work area shorter than the desktop
+      // viewport used by the UI suite. Keep explicit test sizes deterministic.
+      enableLargerThanScreen: true,
       show: false,
       webPreferences: {
         backgroundThrottling: false,
