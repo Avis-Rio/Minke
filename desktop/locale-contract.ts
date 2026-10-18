@@ -1,5 +1,12 @@
 /** Renderer-to-main channel carrying Harness's active locale. */
 export const WINDOW_LOCALE_CHANNEL = "minke:window-locale";
+export const WINDOW_LOCALE_BOOTSTRAP_CHANNEL = "minke:window-locale:bootstrap";
+
+/** Initialization consumed by DSH's standard __DSH_LOCALE__ bridge. */
+export interface DesktopLocaleBootstrap {
+  readonly languages: readonly string[];
+  readonly preference: string | null;
+}
 
 /** Open BCP 47-style locale identifier projected from DeepSeek Harness. */
 export type DesktopLocale = string;

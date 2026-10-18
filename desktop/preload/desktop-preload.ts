@@ -2,9 +2,13 @@ import {
   contextBridge,
   ipcRenderer,
   webFrame,
+  webUtils,
 } from "electron";
 import appManifest from "../../package.json";
+import { createDesktopBrowserBridge } from "./browser.ts";
+import { createDesktopUpdatesBridge } from "./updates.ts";
 import { DIRECTORY_PICK_CHANNEL } from "@minke/desktop/directory-picker-contract.ts";
+import { WINDOW_FULLSCREEN_CHANNEL } from "@minke/desktop/window-fullscreen-contract.ts";
 import macOSSurfaceCss from "../../resources/desktop-style-extension/early.css?raw";
 import {
   PLUGIN_SETTINGS_READ_CHANNEL,
@@ -22,15 +26,8 @@ import {
   type LocalModelRuntimeId,
   type ModelRuntimeSettings,
 } from "@lencx/minke-model-runtime/contract";
-import {
-  isProductShortcutActionId,
-  parseShortcutBindings,
-  SHORTCUT_INVOKE_CHANNEL,
-  SHORTCUT_SETTINGS_READ_CHANNEL,
-  SHORTCUT_SETTINGS_WRITE_CHANNEL,
-  type ProductShortcutActionId,
-  type ShortcutBindings,
-} from "@minke/harness-overlay/shortcut-contract.ts";
+import { SHORTCUT_IPC } from "@minke/harness-overlay/shared-shortcuts-contract.ts";
+import type { DesktopKeyboardApi, DesktopShortcutsApi, DesktopShortcutInput } from "@deepseek-ai/dsh-client-shortcuts/protocol";
 import {
   parseTerminalSettings,
   TERMINAL_SETTINGS_READ_CHANNEL,
@@ -38,12 +35,9 @@ import {
   type TerminalSettings,
 } from "@minke/harness-overlay/terminal-settings-contract.ts";
 import {
-  APP_UPDATE_CHECK_CHANNEL,
   APP_UPDATE_SETTINGS_READ_CHANNEL,
   APP_UPDATE_SETTINGS_WRITE_CHANNEL,
-  parseAppUpdateCheckResult,
   parseAppUpdateSettings,
-  type AppUpdateCheckResult,
   type AppUpdateSettings,
 } from "@minke/harness-overlay/app-update-contract.ts";
 import {
@@ -59,7 +53,6 @@ import {
   type WebSearchSettings,
 } from "@minke/harness-overlay/web-search-settings-contract.ts";
 import {
-  DATA_HOME_CHOOSE_DIRECTORY_CHANNEL,
   DATA_HOME_MIGRATION_PLAN_CHANNEL,
   DATA_HOME_MIGRATION_SCHEDULE_CHANNEL,
   DATA_HOME_SETTINGS_READ_CHANNEL,
@@ -67,15 +60,10 @@ import {
   parseDataHomeMigrationPlanRequest,
   parseDataHomeMigrationScheduleRequest,
   parseDataHomeMigrationScheduleResult,
-  parseDataHomePath,
   parseDataHomeSettingsSnapshot,
   type DataHomeMigrationPlanRequest,
   type DataHomeMigrationScheduleRequest,
 } from "@minke/harness-overlay/data-home-contract.ts";
-import {
-  parseSessionLogExportId,
-  SESSION_LOG_EXPORT_CHANNEL,
-} from "@minke/harness-overlay/session-export-contract.ts";
 import {
   normalizeWebTabUrl,
   parseTabsLayoutState,
@@ -95,7 +83,6 @@ import {
   parseFileManagerDiffResult,
   parseFileManagerListRequest,
   parseFileManagerListResult,
-  parseFileManagerOpenRequest,
   parseFileManagerPreviewRequest,
   parseFileManagerPreviewResult,
   parseFileManagerUnwatchRequest,
@@ -107,7 +94,6 @@ import {
   TABS_FILES_DIFF_CHANNEL,
   TABS_FILES_CHANGE_CHANNEL,
   TABS_FILES_LIST_CHANNEL,
-  TABS_FILES_OPEN_CHANNEL,
   TABS_FILES_PREVIEW_CHANNEL,
   TABS_FILES_UNWATCH_CHANNEL,
   TABS_FILES_VIEW_STATE_READ_CHANNEL,
@@ -117,22 +103,20 @@ import {
   type FileManagerChangeEvent,
   type FileManagerDiffRequest,
   type FileManagerListRequest,
-  type FileManagerOpenRequest,
   type FileManagerPreviewRequest,
   type FileManagerViewStateUpdate,
   type FileManagerWriteRequest,
 } from "@minke/harness-overlay/tabs/files-contract.ts";
 import {
   isDesktopLocale,
+  WINDOW_LOCALE_BOOTSTRAP_CHANNEL,
   WINDOW_LOCALE_CHANNEL,
-  type DesktopLocale,
 } from "@minke/desktop/locale-contract.ts";
 import {
-  isWindowThemeMessage,
+  isWindowThemeSource,
   WINDOW_THEME_CHANNEL,
-  type WindowColorScheme,
-  type WindowThemePreference,
-  type WindowThemeMessage,
+  WINDOW_THEME_SOURCE_ATTRIBUTE,
+  type WindowThemeSource,
 } from "@minke/desktop/window-theme-contract.ts";
 import {
   parseRemoteSettings,
@@ -200,8 +184,7 @@ import {
 } from "@minke/harness-overlay/remote-hub-contract.ts";
 
 let observer: MutationObserver | undefined;
-let lastMessage: WindowThemeMessage | undefined;
-let hasAuthoritativeTheme = false;
+let lastThemeSource: WindowThemeSource | undefined;
 const shortcutUnsubscribers = new Set<() => void>();
 const fileWatchUnsubscribers = new Set<() => void>();
 const remoteRuntimeUnsubscribers = new Set<() => void>();
@@ -213,39 +196,22 @@ if (process.platform === "darwin") {
   webFrame.insertCSS(macOSSurfaceCss);
 }
 
-function currentColorScheme(): WindowColorScheme | undefined {
-  const colorScheme = document.documentElement.style.colorScheme;
-  return colorScheme === "light" || colorScheme === "dark"
-    ? colorScheme
-    : undefined;
+function syncWindowFullscreen(_event: unknown, fullscreen: unknown): void {
+  const root = document.documentElement;
+  if (root === null || typeof fullscreen !== "boolean") return;
+  if (fullscreen) root.dataset.fullscreen = "true";
+  else delete root.dataset.fullscreen;
 }
 
-function sameWindowThemeMessage(
-  left: WindowThemeMessage | undefined,
-  right: WindowThemeMessage,
-): boolean {
-  const leftPreference =
-    left !== undefined && "preference" in left
-      ? left.preference
-      : undefined;
-  return (
-    left?.colorScheme === right.colorScheme &&
-    leftPreference ===
-      ("preference" in right ? right.preference : undefined)
-  );
+if (process.platform === "darwin" || process.platform === "win32") {
+  ipcRenderer.on(WINDOW_FULLSCREEN_CHANNEL, syncWindowFullscreen);
 }
 
-function sendWindowTheme(message: WindowThemeMessage): void {
-  if (sameWindowThemeMessage(lastMessage, message)) return;
-  lastMessage = message;
-  ipcRenderer.send(WINDOW_THEME_CHANNEL, message);
-}
-
-function publishResolvedWindowTheme(): void {
-  if (hasAuthoritativeTheme) return;
-  const colorScheme = currentColorScheme();
-  if (colorScheme === undefined) return;
-  sendWindowTheme({ colorScheme });
+function publishWindowThemeSource(): void {
+  const source = document.documentElement.getAttribute(WINDOW_THEME_SOURCE_ATTRIBUTE);
+  if (!isWindowThemeSource(source) || source === lastThemeSource) return;
+  lastThemeSource = source;
+  ipcRenderer.send(WINDOW_THEME_CHANNEL, source);
 }
 
 function observeWindowTheme(): void {
@@ -258,60 +224,59 @@ function observeWindowTheme(): void {
   }
 
   observer?.disconnect();
-  // Opt into the shared drag watcher without claiming DSH Desktop's separate
-  // native keyboard bridge. Other platforms keep their normal framed windows.
-  if (process.platform === "darwin") document.documentElement.dataset.windowDragPlatform = "darwin";
-  publishResolvedWindowTheme();
+  document.documentElement.dataset.platform = process.platform;
+  publishWindowThemeSource();
   observer?.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: ["style"],
+    attributeFilter: [WINDOW_THEME_SOURCE_ATTRIBUTE],
   });
 }
 
-const shortcuts = Object.freeze({
-  async read(): Promise<unknown> {
-    return await ipcRenderer.invoke(SHORTCUT_SETTINGS_READ_CHANNEL);
-  },
-  async write(bindings: ShortcutBindings): Promise<void> {
-    await ipcRenderer.invoke(
-      SHORTCUT_SETTINGS_WRITE_CHANNEL,
-      parseShortcutBindings(bindings),
-    );
-  },
-  subscribe(
-    listener: (id: ProductShortcutActionId) => void,
-  ): () => void {
-    const wrapped = (_event: unknown, id: unknown): void => {
-      if (isProductShortcutActionId(id)) listener(id);
-    };
-    ipcRenderer.on(SHORTCUT_INVOKE_CHANNEL, wrapped);
-    let active = true;
-    const unsubscribe = (): void => {
-      if (!active) return;
-      active = false;
-      shortcutUnsubscribers.delete(unsubscribe);
-      ipcRenderer.off(SHORTCUT_INVOKE_CHANNEL, wrapped);
-    };
-    shortcutUnsubscribers.add(unsubscribe);
-    return unsubscribe;
-  },
+function subscribeShortcut<T>(channel: string, listener: (value: T) => void): () => void {
+  const handle = (_event: unknown, value: T): void => listener(value);
+  ipcRenderer.on(channel, handle);
+  const off = (): void => { ipcRenderer.off(channel, handle); shortcutUnsubscribers.delete(off); };
+  shortcutUnsubscribers.add(off);
+  return off;
+}
+const shortcuts = Object.freeze<DesktopShortcutsApi>({
+  get: definitions => ipcRenderer.invoke(SHORTCUT_IPC.get, definitions),
+  edit: (edit, revision) => ipcRenderer.invoke(SHORTCUT_IPC.edit, edit, revision),
+  recording: active => ipcRenderer.invoke(SHORTCUT_IPC.recording, active),
+  subscribe: listener => subscribeShortcut(SHORTCUT_IPC.changed, listener),
 });
+const keyboard = Object.freeze<DesktopKeyboardApi>({
+  closeWindow: revision => ipcRenderer.invoke(SHORTCUT_IPC.close, revision),
+  subscribe: listener => subscribeShortcut<DesktopShortcutInput>(SHORTCUT_IPC.input, input => {
+    const element = document.activeElement;
+    if (input.kind === "iframe" && (!(element instanceof HTMLIFrameElement) || !element.isConnected
+      || !element.matches('iframe[data-sidebar-browser-frame], iframe[data-html-preview]')
+      || input.frameName === "" || element.name !== input.frameName)) return;
+    if (input.kind === "webview" && (element?.matches('webview[data-sidebar-browser-frame]') !== true
+      || !element.isConnected || input.frameName === "" || element.getAttribute("name") !== input.frameName)) return;
+    listener(input);
+  }),
+});
+const desktopBrowser = createDesktopBrowserBridge(ipcRenderer);
+const desktopUpdates = createDesktopUpdatesBridge(ipcRenderer);
+contextBridge.exposeInMainWorld("dshDesktop", Object.freeze({ protocolVersion: 1, shortcuts, keyboard, browser: desktopBrowser.browser,
+  updates: desktopUpdates.updates,
+  shortcutsAccepted: (revision: string): void => { ipcRenderer.send(SHORTCUT_IPC.accepted, revision); },
+}));
 
-const locale = Object.freeze({
-  publish(active: DesktopLocale): void {
-    if (!isDesktopLocale(active)) return;
-    ipcRenderer.send(WINDOW_LOCALE_CHANNEL, active);
-  },
-});
-
-const sessionLogs = Object.freeze({
-  async export(sessionId: string): Promise<void> {
-    await ipcRenderer.invoke(
-      SESSION_LOG_EXPORT_CHANNEL,
-      parseSessionLogExportId(sessionId),
-    );
-  },
-});
+if (process.isMainFrame) {
+  contextBridge.exposeInMainWorld("__DSH_LOCALE__", Object.freeze({
+    read: (): Promise<unknown> => ipcRenderer.invoke(WINDOW_LOCALE_BOOTSTRAP_CHANNEL),
+    onChange(active: string): void {
+      if (isDesktopLocale(active)) ipcRenderer.send(WINDOW_LOCALE_CHANNEL, active);
+    },
+  }));
+  // DSH chooses references for disk files/folders and uploads for images or
+  // pasted bytes. Electron alone resolves the path of the actual File object.
+  contextBridge.exposeInMainWorld("__DSH_HOST_PATHS__", Object.freeze({
+    pathFor: (file: File): string => webUtils.getPathForFile(file),
+  }));
+}
 
 const tabs = Object.freeze({
   async readLayoutState(): Promise<unknown> {
@@ -529,12 +494,6 @@ const files = Object.freeze({
       ),
     );
   },
-  async open(request: FileManagerOpenRequest): Promise<void> {
-    await ipcRenderer.invoke(
-      TABS_FILES_OPEN_CHANNEL,
-      parseFileManagerOpenRequest(request),
-    );
-  },
   async preview(
     request: FileManagerPreviewRequest,
   ): Promise<unknown> {
@@ -613,11 +572,6 @@ const terminal = Object.freeze({
 });
 
 const appUpdate = Object.freeze({
-  async check(): Promise<AppUpdateCheckResult> {
-    return parseAppUpdateCheckResult(
-      await ipcRenderer.invoke(APP_UPDATE_CHECK_CHANNEL),
-    );
-  },
   async read(): Promise<unknown> {
     return parseAppUpdateSettings(
       await ipcRenderer.invoke(APP_UPDATE_SETTINGS_READ_CHANNEL),
@@ -770,14 +724,6 @@ const dataHome = Object.freeze({
       await ipcRenderer.invoke(DATA_HOME_SETTINGS_READ_CHANNEL),
     );
   },
-  async chooseDirectory(): Promise<string | undefined> {
-    const selected = await ipcRenderer.invoke(
-      DATA_HOME_CHOOSE_DIRECTORY_CHANNEL,
-    );
-    return selected === undefined
-      ? undefined
-      : parseDataHomePath(selected);
-  },
   async plan(
     request: DataHomeMigrationPlanRequest,
   ): Promise<unknown> {
@@ -811,20 +757,6 @@ const surface = Object.freeze({
   kind: process.platform === "darwin" ? "macos" : "standard",
 });
 
-const windowTheme = Object.freeze({
-  publish(
-    preference: WindowThemePreference,
-    colorScheme: WindowColorScheme,
-  ): void {
-    const message = { preference, colorScheme };
-    if (!isWindowThemeMessage(message) || !("preference" in message)) {
-      throw new TypeError("invalid Harness window theme snapshot");
-    }
-    hasAuthoritativeTheme = true;
-    sendWindowTheme(message);
-  },
-});
-
 contextBridge.exposeInMainWorld("__DSH_DIRECTORY_PICKER__", Object.freeze({
   pick: (): Promise<string | null> => ipcRenderer.invoke(DIRECTORY_PICK_CHANNEL),
 }));
@@ -838,18 +770,14 @@ contextBridge.exposeInMainWorld(
     browser,
     dataHome,
     files,
-    locale,
     modelRuntime,
     pluginRecovery,
     remote,
     remoteHub,
-    sessionLogs,
     tabs,
     terminal,
     webSearch,
-    shortcuts,
     surface,
-    windowTheme,
   }),
 );
 
@@ -859,6 +787,9 @@ observeWindowTheme();
 window.addEventListener(
   "unload",
   () => {
+    ipcRenderer.off(WINDOW_FULLSCREEN_CHANNEL, syncWindowFullscreen);
+    desktopBrowser.dispose();
+    desktopUpdates.dispose();
     for (const unsubscribe of [...shortcutUnsubscribers]) {
       unsubscribe();
     }

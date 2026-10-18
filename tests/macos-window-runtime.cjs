@@ -93,13 +93,14 @@ async function run() {
       initialThemeBeforeDomReady = !domReady;
     }
     themeMessages.push(message);
-    nativeTheme.themeSource = message.preference ?? message.colorScheme;
+    nativeTheme.themeSource = message;
   });
   window.webContents.ipc.on(windowLocaleChannel, (_event, locale) => {
     localeMessages.push(locale);
   });
+  window.webContents.ipc.handle('minke:window-locale:bootstrap', async () => ({ languages: ['zh-Hant', 'en'], preference: 'fr-FR' }));
   const html = `
-    <html style="color-scheme: dark">
+    <html style="color-scheme: dark" data-ds-theme-source="dark">
     <head>
     <style>
       :root {
@@ -323,13 +324,13 @@ async function run() {
   await waitFor(() => themeMessages.length >= 1, 'initial window theme');
   await window.webContents.executeJavaScript(`
     (() => {
-      window.minkeDesktop.locale.publish('zh');
+      window.__DSH_LOCALE__.onChange('zh');
     })()
   `);
   await waitFor(() => localeMessages.length >= 1, 'Harness window locale');
   await window.webContents.executeJavaScript(`
     (() => {
-      window.minkeDesktop.locale.publish('fr-FR');
+      window.__DSH_LOCALE__.onChange('fr-FR');
     })()
   `);
   await waitFor(
@@ -339,7 +340,7 @@ async function run() {
   const malformedLocaleError = await window.webContents.executeJavaScript(`
     (() => {
       try {
-        window.minkeDesktop.locale.publish('fr_FR');
+        window.__DSH_LOCALE__.onChange('fr_FR');
         return '';
       } catch (error) {
         return String(error);
@@ -349,7 +350,7 @@ async function run() {
   const initialThemeSource = nativeTheme.themeSource;
   await window.webContents.executeJavaScript(`
     (() => {
-      window.minkeDesktop.windowTheme.publish('system', 'dark');
+      document.documentElement.setAttribute('data-ds-theme-source', 'system');
     })()
   `);
   await waitFor(() => themeMessages.length >= 2, 'system window preference');
@@ -363,15 +364,36 @@ async function run() {
   const messagesAfterAuthoritativeDomChange = themeMessages.length;
   await window.webContents.executeJavaScript(`
     (() => {
-      window.minkeDesktop.windowTheme.publish('system', 'light');
+      document.documentElement.setAttribute('data-ds-theme-source', 'light');
     })()
   `);
-  await waitFor(() => themeMessages.length >= 3, 'updated system window theme');
+  await waitFor(() => nativeTheme.themeSource === 'light', 'explicit native light theme');
+  await window.webContents.executeJavaScript("document.documentElement.setAttribute('data-ds-theme-source', 'system')");
+  await waitFor(() => themeMessages.length >= 4, 'updated system window theme');
   const updatedSystemThemeSource = nativeTheme.themeSource;
+  const nativeLocale = await window.webContents.executeJavaScript('window.__DSH_LOCALE__.read()');
+  await window.webContents.executeJavaScript(`(() => {
+    const input = document.createElement('input'); input.type = 'file'; input.id = 'native-file-test';
+    document.body.append(input);
+  })()`);
+  window.webContents.debugger.attach('1.3');
+  let hostPaths;
+  try {
+    const { root } = await window.webContents.debugger.sendCommand('DOM.getDocument');
+    const { nodeId } = await window.webContents.debugger.sendCommand('DOM.querySelector', { nodeId: root.nodeId, selector: '#native-file-test' });
+    await window.webContents.debugger.sendCommand('DOM.setFileInputFiles', { nodeId, files: [join(projectRoot, 'package.json')] });
+    hostPaths = await window.webContents.executeJavaScript(`(() => {
+      const file = document.querySelector('#native-file-test').files[0];
+      return { disk: window.__DSH_HOST_PATHS__.pathFor(file), bytes: window.__DSH_HOST_PATHS__.pathFor(new File(['pasted'], 'note.txt')) };
+    })()`);
+  } finally {
+    window.webContents.debugger.detach();
+    await window.webContents.executeJavaScript("document.querySelector('#native-file-test').remove()");
+  }
   const surfaceKind = await window.webContents.executeJavaScript(
     'window.minkeDesktop.surface.kind',
   );
-  const platform = await window.webContents.executeJavaScript('document.documentElement.dataset.windowDragPlatform');
+  const platform = await window.webContents.executeJavaScript('document.documentElement.dataset.platform');
 
   const streamingWork = await window.webContents.executeJavaScript(`
     (async () => {
@@ -563,6 +585,8 @@ async function run() {
     platform,
     initialThemeBeforeDomReady,
     initialThemeSource,
+    nativeLocale,
+    hostPaths,
     malformedLocaleError,
     heroBackground: before.heroBackground,
     heroBackgroundAlpha: alphaOf(before.heroBackground),
@@ -591,6 +615,8 @@ async function run() {
   app.quit();
 
   const failures = [];
+  if (JSON.stringify(result.nativeLocale) !== JSON.stringify({ languages: ['zh-Hant', 'en'], preference: 'fr-FR' })) failures.push('DSH locale bootstrap did not cross the isolated preload');
+  if (result.hostPaths.disk !== join(projectRoot, 'package.json') || result.hostPaths.bytes !== '') failures.push('DSH host paths must preserve real disk files and leave pasted bytes to upload');
   if (result.redundantSurfaceWrites !== 0) {
     failures.push('desktop reconciliation rewrote unchanged markers: ' + result.redundantSurfaceWrites);
   }
@@ -603,9 +629,7 @@ async function run() {
   if (
     JSON.stringify(result.themeMessages) !==
     JSON.stringify([
-      { colorScheme: 'dark' },
-      { preference: 'system', colorScheme: 'dark' },
-      { preference: 'system', colorScheme: 'light' },
+      'dark', 'system', 'light', 'system',
     ])
   ) {
     failures.push('theme preload did not publish the expected state sequence');

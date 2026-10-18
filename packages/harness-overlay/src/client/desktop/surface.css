@@ -36,7 +36,7 @@
 
 /* Only the actual tabs and buttons subtract from the native strip. The flex
    containers also hold empty space, which remains part of the titlebar. */
-html[data-window-drag-platform="darwin"] [data-sidebar-right-panel]
+html[data-platform="darwin"] [data-sidebar-right-panel]
   :is([data-dockkit-strip-tabs], [data-dockkit-strip-chrome]) {
   -webkit-app-region: none;
   app-region: none;

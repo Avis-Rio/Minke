@@ -10,13 +10,12 @@ import {
   isDesktopLocale,
   resolveDesktopLocale,
   WINDOW_LOCALE_CHANNEL,
+  WINDOW_LOCALE_BOOTSTRAP_CHANNEL,
 } from "@minke/desktop/locale-contract.ts";
 import {
   bindWindowLocale,
+  readHarnessLocaleBootstrap,
 } from "@minke/desktop/main/window-locale.ts";
-import {
-  installDesktopClient,
-} from "@minke/harness-overlay/client/desktop/install.ts";
 import {
   isHarnessLocale,
 } from "@minke/harness-overlay/client/core/context.ts";
@@ -67,12 +66,12 @@ test("desktop dictionaries are complete and interpolate native details", () => {
   }
 
   assert.equal(
-    translateDesktop("zh", "runtime.exitCode", { value: 17 }),
-    "退出码：17",
+    translateDesktop("zh", "recovery.report", { path: "/tmp/report.log" }),
+    "诊断文件：/tmp/report.log",
   );
   assert.equal(
-    translateDesktop("en", "runtime.exitCode", { value: 17 }),
-    "Exit code: 17",
+    translateDesktop("en", "recovery.report", { path: "/tmp/report.log" }),
+    "Diagnostic file: /tmp/report.log",
   );
   assert.equal(
     translateDesktop("zh", "sessionExport.saveDialogTitle"),
@@ -112,14 +111,17 @@ test("desktop locale runtime preserves language-pack ids and projects native cop
   assert.equal(runtime.getSnapshot().revision, 1);
 });
 
-test("only authorized, valid Harness locale messages update desktop state", () => {
-  const ipc = new EventEmitter();
+test("only authorized, valid Harness locale messages update desktop state", async () => {
+  const ipc = localeIpc();
   const runtime = new DesktopLocaleRuntime("en");
   const binding = bindWindowLocale(
     { webContents: { ipc } },
     runtime,
     (event) => event === "allowed",
+    async () => ({ languages: ["zh-Hant", "en"], preference: "fr-FR" }),
   );
+  await assert.rejects(ipc.handlers.get(WINDOW_LOCALE_BOOTSTRAP_CHANNEL)("denied"), /unauthorized/);
+  assert.deepEqual(await ipc.handlers.get(WINDOW_LOCALE_BOOTSTRAP_CHANNEL)("allowed"), { languages: ["zh-Hant", "en"], preference: "fr-FR" });
   let notifications = 0;
   const unsubscribe = runtime.subscribe(() => {
     notifications += 1;
@@ -154,72 +156,12 @@ test("only authorized, valid Harness locale messages update desktop state", () =
   ipc.emit(WINDOW_LOCALE_CHANNEL, "allowed", "en");
   assert.equal(runtime.getSnapshot().active, "zh-Hant");
   assert.equal(ipc.listenerCount(WINDOW_LOCALE_CHANNEL), 0);
+  assert.equal(ipc.handlers.size, 0);
   unsubscribe();
 });
 
-test("desktop client locale sync cannot be interrupted by language-pack ids", () => {
-  const previousWindow = globalThis.window;
-  const published = [];
-  const listeners = new Map();
-  globalThis.window = {
-    minkeDesktop: {
-      locale: {
-        publish(locale) {
-          published.push(locale);
-        },
-      },
-    },
-  };
-  try {
-    installDesktopClient({
-      effect() {},
-      locale: {
-        getSnapshot() {
-          return { active: "fr-FR", revision: 0 };
-        },
-      },
-      on(event, listener) {
-        listeners.set(event, listener);
-      },
-      theme: {
-        getTheme() {
-          return {
-            preference: "system",
-            active: { colorScheme: "dark" },
-          };
-        },
-      },
-    });
-
-    assert.deepEqual(published, ["fr-FR"]);
-    assert.doesNotThrow(() => {
-      listeners.get("locale/change")?.({
-        active: "zh-Hant-TW",
-        revision: 1,
-      });
-    });
-    assert.deepEqual(published, ["fr-FR", "zh-Hant-TW"]);
-
-    listeners.get("locale/change")?.({
-      active: "fr_FR",
-      revision: 2,
-    });
-    assert.deepEqual(
-      published,
-      ["fr-FR", "zh-Hant-TW"],
-      "malformed locale ids must not cross into preload",
-    );
-  } finally {
-    if (previousWindow === undefined) {
-      delete globalThis.window;
-    } else {
-      globalThis.window = previousWindow;
-    }
-  }
-});
-
 test("locale binding can dispose after its BrowserWindow is destroyed", () => {
-  const ipc = new EventEmitter();
+  const ipc = localeIpc();
   let destroyed = false;
   const window = {
     get webContents() {
@@ -228,9 +170,50 @@ test("locale binding can dispose after its BrowserWindow is destroyed", () => {
     },
   };
   const runtime = new DesktopLocaleRuntime("en");
-  const binding = bindWindowLocale(window, runtime, () => true);
+  const binding = bindWindowLocale(window, runtime, () => true, async () => ({ languages: ["en"], preference: null }));
 
   destroyed = true;
   assert.doesNotThrow(() => binding.dispose());
   assert.equal(ipc.listenerCount(WINDOW_LOCALE_CHANNEL), 0);
+  assert.equal(ipc.handlers.size, 0);
+});
+
+function localeIpc() {
+  const ipc = new EventEmitter();
+  ipc.handlers = new Map();
+  ipc.handle = (channel, listener) => ipc.handlers.set(channel, listener);
+  ipc.removeHandler = channel => ipc.handlers.delete(channel);
+  return ipc;
+}
+
+test("native locale bootstrap reads DSH settings without saving a second preference", async () => {
+  for (const preference of [undefined, "fr-FR"]) {
+    const requests = [];
+    const bootstrap = await readHarnessLocaleBootstrap("http://127.0.0.1:4321", ["zh-Hant", "en-US"], async (url, init) => {
+      requests.push({ url, init });
+      const request = JSON.parse(init.body);
+      assert.equal(request.method, "settings/describe");
+      assert.deepEqual(request.payload, { args: {} });
+      return Response.json({ type: "server-response", rpcId: request.rpcId, result: { ok: true, value: {
+        namespaces: [{ ns: "locale", value: preference === undefined ? {} : { preference } }],
+      } } });
+    });
+    assert.deepEqual(bootstrap, { languages: ["zh-Hant", "en-US"], preference: preference ?? null });
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, "http://127.0.0.1:4321/api/settings/describe");
+    assert.equal(requests[0].init.credentials, "include");
+    assert.equal(requests[0].init.redirect, "error");
+  }
+});
+
+test("native locale bootstrap rejects failed and malformed Host responses", async () => {
+  for (const namespaces of [[], [{ ns: "locale", value: { preference: 1 } }]]) {
+    await assert.rejects(readHarnessLocaleBootstrap("http://127.0.0.1:4321", ["en"], async (_url, init) => {
+      const request = JSON.parse(init.body);
+      return Response.json({ type: "server-response", rpcId: request.rpcId,
+        result: { ok: true, value: { namespaces } } });
+    }), /invalid locale preference/);
+  }
+  await assert.rejects(readHarnessLocaleBootstrap("http://127.0.0.1:4321", ["en"], async () => new Response(null, { status: 403 })), /settings request failed/);
+  await assert.rejects(readHarnessLocaleBootstrap("http://127.0.0.1:4321", ["en"], async () => Response.json({})), /invalid settings response/);
 });

@@ -1,10 +1,10 @@
 import {
   DatabaseBackup,
   Globe,
-  Keyboard,
   SlidersHorizontal,
   type LucideIconData,
 } from "@lucide/icons";
+import { Button, SegmentedTabs, type SegmentedTab } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   Component,
   useEffect,
@@ -12,7 +12,6 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-  type KeyboardEvent,
   type ErrorInfo,
   type ReactNode,
 } from "react";
@@ -33,49 +32,8 @@ const PAGE_ICONS: Readonly<
 > = {
   preferences: SlidersHorizontal,
   browser: Globe,
-  shortcuts: Keyboard,
   "data-home": DatabaseBackup,
 };
-
-type TabNavigationKey =
-  | "ArrowLeft"
-  | "ArrowRight"
-  | "Home"
-  | "End";
-
-/** Resolve horizontal tab keyboard navigation without coupling it to DOM. */
-export function nextMinkeSettingsTabIndex(
-  current: number,
-  length: number,
-  key: string,
-): number | undefined {
-  if (length <= 0) return undefined;
-  switch (key as TabNavigationKey) {
-    case "ArrowLeft":
-      return (current - 1 + length) % length;
-    case "ArrowRight":
-      return (current + 1) % length;
-    case "Home":
-      return 0;
-    case "End":
-      return length - 1;
-    default:
-      return undefined;
-  }
-}
-
-/** Decide whether a page's live content should remain mounted while hidden. */
-export function shouldMountMinkeSettingsPage(
-  page: MinkeSettingsPage,
-  activeId: string | undefined,
-  visitedIds: ReadonlySet<string>,
-): boolean {
-  return page.id === activeId ||
-    (
-      page.keepAlive !== false &&
-      visitedIds.has(page.id)
-    );
-}
 
 interface MinkeSettingsPageContentProps {
   page: MinkeSettingsPage;
@@ -127,9 +85,9 @@ class MinkeSettingsPageBoundary extends Component<
     return (
       <div className="minke-settings__page-error" role="alert">
         <p>{this.props.t("pageError")}</p>
-        <button type="button" onClick={this.#retry}>
+        <Button size="sm" variant="outline" onClick={this.#retry}>
           {this.props.t("retry")}
-        </button>
+        </Button>
       </div>
     );
   }
@@ -157,7 +115,6 @@ export function MinkeSettingsSection({
   );
   const idPrefix = useId();
   const rootRef = useRef<HTMLElement>(null);
-  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [visitedIds, setVisitedIds] = useState<ReadonlySet<string>>(
     () => new Set(
       snapshot.activeId === undefined ? [] : [snapshot.activeId],
@@ -173,30 +130,23 @@ export function MinkeSettingsSection({
     });
   }, [snapshot.activeId]);
 
-  const selectPage = (id: string, index?: number): void => {
+  const selectPage = (id: string): void => {
     runtime.select(id);
     rootRef.current?.scrollIntoView({
       block: "start",
       behavior: "instant",
     });
-    if (index !== undefined) tabRefs.current[index]?.focus();
   };
 
-  const handleTabKeyDown = (
-    event: KeyboardEvent<HTMLButtonElement>,
-    index: number,
-  ): void => {
-    const next = nextMinkeSettingsTabIndex(
-      index,
-      snapshot.pages.length,
-      event.key,
-    );
-    if (next === undefined) return;
-    const page = snapshot.pages[next];
-    if (page === undefined) return;
-    event.preventDefault();
-    selectPage(page.id, next);
-  };
+  const [firstTab, ...remainingTabs] = snapshot.pages.map((page): SegmentedTab => ({
+    value: page.id,
+    id: `${idPrefix}-tab-${page.id}`,
+    panelId: `${idPrefix}-panel-${page.id}`,
+    label: <>
+      <LucideIcon icon={PAGE_ICONS[page.icon]} size={16} />
+      <span className="minke-settings__tab-label">{page.label()}</span>
+    </>,
+  }));
 
   return (
     <section
@@ -204,7 +154,7 @@ export function MinkeSettingsSection({
       className="minke-settings"
       data-minke-settings
     >
-      {snapshot.pages.length === 0
+      {firstTab === undefined
         ? (
           <p className="minke-settings__empty" role="status">
             {t("empty")}
@@ -213,56 +163,20 @@ export function MinkeSettingsSection({
         : (
           <>
             <div className="minke-settings__tabs-shell">
-              <div
+              <SegmentedTabs
                 className="minke-settings__tabs"
-                role="tablist"
-                aria-label={t("title")}
-              >
-                {snapshot.pages.map((page, index) => {
-                  const active = page.id === snapshot.activeId;
-                  const label = page.label();
-                  const tabId = `${idPrefix}-tab-${page.id}`;
-                  const panelId = `${idPrefix}-panel-${page.id}`;
-                  return (
-                    <button
-                      ref={(element) => {
-                        tabRefs.current[index] = element;
-                      }}
-                      key={page.id}
-                      id={tabId}
-                      type="button"
-                      className="minke-settings__tab"
-                      role="tab"
-                      aria-label={label}
-                      aria-selected={active}
-                      aria-controls={panelId}
-                      tabIndex={active ? 0 : -1}
-                      title={label}
-                      onClick={() => selectPage(page.id)}
-                      onKeyDown={(event) =>
-                        handleTabKeyDown(event, index)}
-                    >
-                      <LucideIcon
-                        icon={PAGE_ICONS[page.icon]}
-                        size={17}
-                      />
-                      <span className="minke-settings__tab-label">
-                        {label}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
+                items={[firstTab, ...remainingTabs]}
+                value={snapshot.activeId ?? firstTab.value}
+                onChange={selectPage}
+                label={t("title")}
+              />
             </div>
             <div className="minke-settings__pages">
               {snapshot.pages.map((page) => {
                 const tabId = `${idPrefix}-tab-${page.id}`;
                 const panelId = `${idPrefix}-panel-${page.id}`;
-                const mounted = shouldMountMinkeSettingsPage(
-                  page,
-                  snapshot.activeId,
-                  visitedIds,
-                );
+                // Preserve drafts after a page's first visit.
+                const mounted = page.id === snapshot.activeId || visitedIds.has(page.id);
                 return (
                   <div
                     key={page.id}

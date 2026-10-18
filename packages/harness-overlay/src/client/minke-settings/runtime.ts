@@ -5,7 +5,6 @@ import type {
 export type MinkeSettingsPageIcon =
   | "preferences"
   | "browser"
-  | "shortcuts"
   | "data-home";
 
 export interface MinkeSettingsPage {
@@ -13,11 +12,6 @@ export interface MinkeSettingsPage {
   readonly order: number;
   readonly label: () => string;
   readonly icon: MinkeSettingsPageIcon;
-  /**
-   * Keep the page mounted after it has been visited.
-   * Disable this for transient interaction modes that own global listeners.
-   */
-  readonly keepAlive?: boolean;
   readonly render: () => ReactNode;
 }
 

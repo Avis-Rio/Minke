@@ -1,0 +1,10 @@
+/* Without a brand mark, the collapsed rail keeps its native expand glyph. */
+[data-sidebar-collapsed] [data-slot="sidebar"] button:has([data-slot="sidebar.brand.mark"]) > svg {
+  display: inline;
+}
+
+/* macOS has a separate titlebar toggle, so its empty brand row needs no space. */
+html[data-platform="darwin"] [data-slot="sidebar"]
+  [data-window-drag]:has([data-slot="sidebar.brand.name"]) {
+  display: none;
+}

@@ -1,11 +1,5 @@
 /** Shared desktop/client contract for durable Minke keyboard shortcuts. */
 
-export const SHORTCUT_SETTINGS_READ_CHANNEL =
-  "minke:shortcut-settings:read";
-export const SHORTCUT_SETTINGS_WRITE_CHANNEL =
-  "minke:shortcut-settings:write";
-export const SHORTCUT_INVOKE_CHANNEL = "minke:shortcut:invoke";
-
 export const DEFAULT_SHORTCUT_BINDINGS = Object.freeze({
   "palette.open": "Mod+K",
   "settings.open": "Mod+Comma",

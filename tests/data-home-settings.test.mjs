@@ -11,7 +11,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import {
-  DATA_HOME_CHOOSE_DIRECTORY_CHANNEL,
   DATA_HOME_MIGRATION_PLAN_CHANNEL,
   DATA_HOME_MIGRATION_SCHEDULE_CHANNEL,
   DATA_HOME_SETTINGS_READ_CHANNEL,
@@ -899,7 +898,7 @@ test("a corrupt migration receipt does not prevent Settings or startup recovery"
   assert.equal(snapshot.lastMigration?.status, "failed");
 });
 
-test("data-home Settings IPC authorizes all read, picker, plan, and schedule operations", async () => {
+test("data-home Settings IPC exposes only authorized read, plan, and schedule operations", async () => {
   const handlers = new Map();
   const calls = [];
   const snapshot = {
@@ -920,10 +919,6 @@ test("data-home Settings IPC authorizes all read, picker, plan, and schedule ope
       async read() {
         calls.push(["read"]);
         return snapshot;
-      },
-      async chooseDirectory() {
-        calls.push(["choose"]);
-        return "/chosen";
       },
       async plan(request) {
         calls.push(["plan", request]);
@@ -949,13 +944,14 @@ test("data-home Settings IPC authorizes all read, picker, plan, and schedule ope
     (event) => event === "allowed",
   );
 
+  assert.deepEqual([...handlers.keys()], [
+    DATA_HOME_SETTINGS_READ_CHANNEL,
+    DATA_HOME_MIGRATION_PLAN_CHANNEL,
+    DATA_HOME_MIGRATION_SCHEDULE_CHANNEL,
+  ]);
   assert.deepEqual(
     await handlers.get(DATA_HOME_SETTINGS_READ_CHANNEL)("allowed"),
     snapshot,
-  );
-  assert.equal(
-    await handlers.get(DATA_HOME_CHOOSE_DIRECTORY_CHANNEL)("allowed"),
-    "/chosen",
   );
   assert.equal(
     (
@@ -980,13 +976,11 @@ test("data-home Settings IPC authorizes all read, picker, plan, and schedule ope
       targetPath: "/target",
     },
   );
-  await assert.rejects(
-    handlers.get(DATA_HOME_SETTINGS_READ_CHANNEL)("denied"),
-    /unauthorized/u,
-  );
+  for (const handler of handlers.values()) {
+    await assert.rejects(handler("denied"), /unauthorized/u);
+  }
   assert.deepEqual(calls, [
     ["read"],
-    ["choose"],
     ["plan", { mode: "merge", targetPath: "/target" }],
     [
       "schedule",
@@ -1022,13 +1016,16 @@ test("data-home Settings bridge and runtime expose the migration workflow", asyn
     ],
   };
   const port = desktopDataHomeSettingsPort({
+    __DSH_DIRECTORY_PICKER__: {
+      async pick() {
+        calls.push(["pick"]);
+        return "/chosen";
+      },
+    },
     minkeDesktop: {
       dataHome: {
         async read() {
           return snapshot;
-        },
-        async chooseDirectory() {
-          return "/chosen";
         },
         async plan(request) {
           calls.push(["plan", request]);
@@ -1069,6 +1066,7 @@ test("data-home Settings bridge and runtime expose the migration workflow", asyn
   await runtime.schedule("/fresh", "fresh");
   assert.equal(runtime.getSnapshot().scheduled, true);
   assert.deepEqual(calls, [
+    ["pick"],
     ["plan", { mode: "merge", targetPath: "/recommended" }],
     [
       "schedule",
@@ -1089,6 +1087,42 @@ test("data-home Settings bridge and runtime expose the migration workflow", asyn
     ],
   ]);
   runtime.dispose();
+});
+
+test("Storage directory selection preserves data on cancellation and recovers from picker errors", async () => {
+  const data = { activePath: "/active", recommendedPath: "/recommended", candidates: [] };
+  const source = { minkeDesktop: { dataHome: { async read() { return data; } } } };
+  const runtime = new DataHomeSettingsRuntime(desktopDataHomeSettingsPort(source));
+  await runtime.initialize();
+  try {
+    // Missing native capability is a recoverable selection error, not a fallback to private IPC.
+    assert.equal(await runtime.chooseDirectory(), undefined);
+    assert.equal(runtime.getSnapshot().error, "choose");
+    const selection = Promise.withResolvers();
+    source.__DSH_DIRECTORY_PICKER__ = { pick: () => selection.promise };
+    const pending = runtime.chooseDirectory();
+    assert.equal(runtime.getSnapshot().busy, true);
+    selection.resolve(null);
+    assert.equal(await pending, undefined);
+    assert.equal(runtime.getSnapshot().error, undefined);
+    assert.equal(runtime.getSnapshot().busy, false);
+    assert.deepEqual(runtime.getSnapshot().data, data);
+
+    for (const pick of [async () => "\u0000invalid", async () => { throw new Error("dialog failed"); }]) {
+      source.__DSH_DIRECTORY_PICKER__ = { pick };
+      assert.equal(await runtime.chooseDirectory(), undefined);
+      assert.equal(runtime.getSnapshot().error, "choose");
+      assert.equal(runtime.getSnapshot().busy, false);
+      assert.deepEqual(runtime.getSnapshot().data, data);
+    }
+    source.__DSH_DIRECTORY_PICKER__ = { async pick() { return "/工作区/storage"; } };
+    assert.equal(await runtime.chooseDirectory(), "/工作区/storage");
+    assert.equal(runtime.getSnapshot().error, undefined);
+    assert.deepEqual(runtime.getSnapshot().data, data);
+    assert.equal(runtime.getSnapshot().plan, undefined);
+  } finally {
+    runtime.dispose();
+  }
 });
 
 test("data-home Settings stays discoverable with an older desktop preload", async () => {

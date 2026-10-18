@@ -12,8 +12,10 @@
 
 .minke-about[data-wide="true"] {
   position: absolute;
+  top: 0;
   right: 0;
-  bottom: 7px;
+  bottom: 0;
+  height: auto;
   z-index: 2;
   margin: 0;
 }
@@ -43,39 +45,22 @@
 
 .minke-about__trigger,
 .minke-about__close {
-  display: inline-grid;
   flex: none;
-  place-items: center;
+  justify-content: center;
   padding: 0;
-  border: none;
-  background: transparent;
   color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
 }
 
 .minke-about__trigger {
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
+  width: 28px;
 }
 
 .minke-about[data-wide="false"] .minke-about__trigger {
   width: 36px;
-  height: 36px;
-  border-radius: 50%;
   color: var(--dsw-alias-label-primary);
 }
 
-.minke-about__trigger:hover,
-.minke-about__close:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
-}
-
-.minke-about__trigger:focus-visible,
-.minke-about__close:focus-visible,
-.minke-about__inline-link:focus-visible,
-.minke-about__action:focus-visible {
+.minke-about__inline-link:focus-visible, a.minke-about__action:focus-visible {
   outline: 2px solid var(--dsw-alias-brand-primary);
   outline-offset: 2px;
 }
@@ -127,9 +112,7 @@
   position: absolute;
   top: 14px;
   right: 14px;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
+  width: 28px;
 }
 
 .minke-about__identity {
@@ -206,69 +189,41 @@
   margin: 0;
 }
 
-.minke-about__action {
+a.minke-about__action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   width: max-content;
-  height: 38px;
+  height: 36px;
   padding: 0 12px;
   box-sizing: border-box;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 10px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
   background: transparent;
   color: var(--dsw-alias-label-secondary);
   font: inherit;
-  font-size: 12px;
+  font-size: 14px;
   line-height: 20px;
   white-space: nowrap;
   text-decoration: none;
   cursor: pointer;
 }
 
-.minke-about__action:hover {
+a.minke-about__action:hover {
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
 }
 
-.minke-about__action:disabled {
-  opacity: 0.58;
-  cursor: wait;
-}
-
-.minke-about__action:disabled:hover {
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-}
-
-.minke-about__update-check-label,
-.minke-about__update-status-label {
-  display: grid;
-}
-
-.minke-about__update-check-label > span,
-.minke-about__update-status-label > span {
-  grid-area: 1 / 1;
-  visibility: hidden;
-}
-
-.minke-about__update-check-label
-  > span[data-active="true"],
-.minke-about__update-status-label
-  > span[data-active="true"] {
-  visibility: visible;
-}
-
-.minke-about__action--primary {
+a.minke-about__action--primary {
   border-color: transparent;
-  background: var(--dsw-alias-button-info-fill);
+  background: var(--dsw-alias-button-primary-fill);
   color: var(--dsw-alias-label-primary-foreground);
   font-weight: 500;
 }
 
-.minke-about__action--primary:hover {
-  background: var(--dsw-alias-button-info-hover);
+a.minke-about__action--primary:hover {
+  background: var(--dsw-alias-button-primary-hover);
   color: var(--dsw-alias-label-primary-foreground);
 }
 
@@ -280,14 +235,6 @@
 
 .minke-about__github-mark {
   flex: none;
-}
-
-.minke-about__update-status {
-  margin: 0;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 11px;
-  line-height: 18px;
-  text-align: center;
 }
 
 @keyframes minke-about-mask-in {

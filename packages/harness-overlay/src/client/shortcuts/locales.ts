@@ -22,8 +22,8 @@ export const zh = {
   "action.openBottomFiles": "在底栏打开文件管理器",
   "action.openRightTerminal": "在右栏打开终端",
   "action.openBottomTerminal": "在底栏打开终端",
-  "action.openRightBrowser": "在右栏打开浏览器",
-  "action.openBottomBrowser": "在底栏打开浏览器",
+  "action.openRightBrowser": "在右栏打开常驻浏览器",
+  "action.openBottomBrowser": "在底栏打开常驻浏览器",
   "action.openRightBrowserHistory": "在右栏打开浏览历史",
   "action.openBottomBrowserHistory": "在底栏打开浏览历史",
   "action.openRightPlugins": "在右栏打开插件",
@@ -64,8 +64,8 @@ export const en: Record<ShortcutLocaleKey, string> = {
   "action.openBottomFiles": "Open File Manager in Bottom Panel",
   "action.openRightTerminal": "Open Terminal in Right Panel",
   "action.openBottomTerminal": "Open Terminal in Bottom Panel",
-  "action.openRightBrowser": "Open Browser in Right Panel",
-  "action.openBottomBrowser": "Open Browser in Bottom Panel",
+  "action.openRightBrowser": "Open Persistent Browser in Right Panel",
+  "action.openBottomBrowser": "Open Persistent Browser in Bottom Panel",
   "action.openRightBrowserHistory":
     "Open Browser History in Right Panel",
   "action.openBottomBrowserHistory":

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { embeddedNodeChildEnvironment } from "../../config/embedded-node-runtime.mts";
 import { readHarnessRuntimeLayout, type HarnessRuntimeLayout } from "./harness-launch.ts";
 import { runProfileMigrationCommand, type ProfileMigrationCommandRunner } from "./profile-migration/command.ts";
+import { parseTerminalSettings, type TerminalSettings } from "@minke/harness-overlay/terminal-settings-contract.ts";
 
 export interface ProfileMigrationOptions {
   runtimeRoot: string;
@@ -95,6 +96,95 @@ export async function migrateDisabledProfileBundles(
   if (names.length === 0) return;
   await runProfileMigration(options, DISABLED_PLUGIN_MIGRATION_SOURCE, [JSON.stringify(names)]);
 }
+
+/** Import legacy terminal typography once per Data Home before theme startup. */
+export async function migrateTerminalFontProfile(
+  options: ProfileMigrationOptions,
+  legacy?: TerminalSettings,
+): Promise<void> {
+  const marker = join(options.dshHome, "profiles", "web", ".minke-terminal-fonts.json");
+  try {
+    const saved = JSON.parse(await readFile(marker, "utf8")) as { version?: number };
+    if (saved.version !== 1) throw new Error("unsupported terminal font migration record");
+    return;
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  await runProfileMigration(options, TERMINAL_FONT_MIGRATION_SOURCE,
+    [JSON.stringify(legacy === undefined ? null : parseTerminalSettings(legacy))]);
+}
+
+const TERMINAL_FONT_MIGRATION_SOURCE = String.raw`
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+const [entry, home, raw] = process.argv.slice(1);
+const require = createRequire(entry);
+const load = name => import(pathToFileURL(require.resolve(name)).href);
+const { withFileLock, writeFileAtomic } = await load("@deepseek-ai/dsh-atomic-write");
+const { parseDocument, isSeq, isMap } = await load("yaml");
+const legacy = JSON.parse(raw);
+const dir = join(home, "profiles", "web");
+const path = join(dir, "cordis.patch.yml");
+const marker = join(dir, ".minke-terminal-fonts.json");
+const read = async path => {
+  try { return await readFile(path, "utf8"); }
+  catch (error) { if (error.code === "ENOENT") return undefined; throw error; }
+};
+const parse = text => {
+  const document = parseDocument(text ?? "[]\n", {
+    customTags: [{ tag: "tag:yaml.org,2002:js", resolve: value => value }],
+  });
+  if (document.errors[0]) throw document.errors[0];
+  if (document.contents === null) document.contents = document.createNode([]);
+  if (!isSeq(document.contents)) throw new Error("Profile patch must be a YAML sequence");
+  return document;
+};
+const themeRow = row => isMap(row) && !row.has("insert") && row.get("id") === "ui-theme";
+await mkdir(dir, { recursive: true });
+await withFileLock(join(dir, "package.json"), async () => {
+  if (await read(marker) !== undefined) return;
+  const migrated = {};
+  if (legacy !== null) {
+    const before = await read(path);
+    const document = parse(before);
+    const homeDocument = parse(await read(join(home, "cordis.patch.yml")));
+    // Home overrides own their whole config; leave that explicitly managed theme alone.
+    if (!homeDocument.contents.items.some(row => themeRow(row) && row.has("config"))) {
+      let row = document.contents.items.findLast(row => themeRow(row) && row.has("config"))
+        ?? document.contents.items.findLast(themeRow);
+      const config = row?.get("config", true);
+      // Never evaluate or replace a dynamic configuration expression.
+      if (config === undefined || isMap(config)) {
+        const next = config ?? document.createNode({});
+        if (!next.has("terminalFontFamily") && legacy.fontFamily !== "") {
+          migrated.terminalFontFamily = legacy.fontFamily;
+          next.set("terminalFontFamily", legacy.fontFamily);
+        }
+        if (!next.has("terminalFontSize")) {
+          migrated.terminalFontSize = Math.min(20, Math.max(10, legacy.fontSize));
+          next.set("terminalFontSize", migrated.terminalFontSize);
+        }
+        if (Object.keys(migrated).length > 0) {
+          if (before !== undefined) {
+            try { await writeFile(path + ".before-minke-terminal-fonts", before, { flag: "wx", mode: 0o600 }); }
+            catch (error) { if (error.code !== "EEXIST") throw error; }
+          }
+          if (row === undefined) {
+            row = document.createNode({ id: "ui-theme" });
+            document.add(row);
+          }
+          row.set("config", next);
+          document.contents.flow = false;
+          await writeFileAtomic(path, String(document), { mode: 0o600 });
+        }
+      }
+    }
+  }
+  // The original desktop values remain a backup; this receipt prevents re-import
+  // after a user changes or resets General settings, including after a restart.
+  await writeFileAtomic(marker, JSON.stringify({ version: 1, legacy, migrated }, null, 2) + "\n", { mode: 0o600 });
+});
+`;
 
 async function runProfileMigration(options: ProfileMigrationOptions, source: string, args: string[] = []): Promise<void> {
   const layout = await (options.readRuntimeLayout?.() ?? readHarnessRuntimeLayout(options.runtimeRoot));

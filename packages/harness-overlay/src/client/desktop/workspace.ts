@@ -25,9 +25,6 @@ import {
   parseAgentBrowserAnnotationStopRequest,
 } from "@minke/harness-overlay/agent-browser-annotation-contract.ts";
 import {
-  parseSessionLogExportId,
-} from "@minke/harness-overlay/session-export-contract.ts";
-import {
   parseTabsLayoutState,
   parseTabsLayoutStateUpdate,
 } from "@minke/harness-overlay/tabs/contract.ts";
@@ -37,7 +34,6 @@ import {
   parseFileManagerDiffResult,
   parseFileManagerListRequest,
   parseFileManagerListResult,
-  parseFileManagerOpenRequest,
   parseFileManagerPreviewRequest,
   parseFileManagerPreviewResult,
   parseFileManagerViewState,
@@ -51,7 +47,6 @@ import type {
   DesktopAgentBrowserPort,
   DesktopFilesPort,
   PluginRecoveryPort,
-  DesktopSessionLogsPort,
   DesktopTabsPort,
 } from "./contracts.ts";
 
@@ -226,30 +221,6 @@ export function desktopPluginRecoveryPort(
   };
 }
 
-/** Adapt the native save/reveal workflow exposed by the isolated preload. */
-export function desktopSessionLogsPort(
-  source: DesktopBridgeWindow =
-    window as unknown as DesktopBridgeWindow,
-): DesktopSessionLogsPort {
-  const bridge = source.minkeDesktop?.sessionLogs;
-  if (bridge === undefined) {
-    return {
-      available: false,
-      async export() {
-        throw new Error(
-          "Minke desktop Session export bridge is unavailable",
-        );
-      },
-    };
-  }
-  return {
-    available: true,
-    async export(sessionId) {
-      await bridge.export(parseSessionLogExportId(sessionId));
-    },
-  };
-}
-
 /** Adapt the isolated preload bridge used by host-backed tab actions. */
 export function desktopTabsPort(
   source: DesktopBridgeWindow =
@@ -298,7 +269,6 @@ export function desktopFilesPort(
   if (bridge === undefined) {
     return {
       available: false,
-      nativeOpenAvailable: false,
       watchAvailable: false,
       async diff() {
         throw new Error(
@@ -306,11 +276,6 @@ export function desktopFilesPort(
         );
       },
       async list() {
-        throw new Error(
-          "Minke desktop Files bridge is unavailable",
-        );
-      },
-      async open() {
         throw new Error(
           "Minke desktop Files bridge is unavailable",
         );
@@ -332,7 +297,6 @@ export function desktopFilesPort(
   }
   return {
     available: true,
-    nativeOpenAvailable: true,
     watchAvailable: bridge.watch !== undefined,
     async diff(request) {
       return parseFileManagerDiffResult(
@@ -347,9 +311,6 @@ export function desktopFilesPort(
           parseFileManagerListRequest(request),
         ),
       );
-    },
-    async open(request) {
-      await bridge.open(parseFileManagerOpenRequest(request));
     },
     async preview(request) {
       return parseFileManagerPreviewResult(

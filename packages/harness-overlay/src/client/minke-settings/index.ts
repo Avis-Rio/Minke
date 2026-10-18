@@ -1,7 +1,5 @@
 export {
   MinkeSettingsSection,
-  nextMinkeSettingsTabIndex,
-  shouldMountMinkeSettingsPage,
 } from "./MinkeSettingsSection.tsx";
 export {
   installMinkeSettings,

@@ -139,6 +139,7 @@ export function bindShortcutMenu(
   initialBindings: ShortcutBindings,
   dispatch: (id: ProductShortcutActionId) => void,
   platform: NodeJS.Platform = process.platform,
+  closePage?: (label: string) => MenuItemConstructorOptions,
 ): ShortcutMenuBinding {
   let bindings = parseShortcutBindings(initialBindings);
   let baseMenu = snapshotBaseMenu(
@@ -151,7 +152,7 @@ export function bindShortcutMenu(
     if (disposed) return;
     const entries = baseMenu.map(({ kind, template }) => ({
       kind,
-      template: cloneTemplate(template),
+      template: cloneTemplate(template, closePage),
     }));
     injectActions(
       entries,
@@ -390,6 +391,7 @@ function actionMenuItem(
     id: itemId,
     label: locale.t(labelKey),
     ...(accelerator === undefined ? {} : { accelerator }),
+    registerAccelerator: false,
     click: () => dispatch(id),
   };
 }
@@ -428,6 +430,7 @@ function tabCreateSubmenu(
         ...(accelerator === undefined
           ? {}
           : { accelerator }),
+        registerAccelerator: false,
         click: () => dispatch(descriptor.actionId),
       };
     });
@@ -514,7 +517,8 @@ function classifyTopLevel(
   }
   if (
     item.role === "fileMenu" ||
-    submenuContainsRole(item, "close")
+    submenuContainsRole(item, "close") ||
+    item.submenu?.items.some(child => child.id === "dsh-page-close")
   ) {
     return "file";
   }
@@ -586,11 +590,13 @@ function cloneMenuItem(item: MenuItem): MenuItemConstructorOptions {
 
 function cloneTemplate(
   item: MenuItemConstructorOptions,
+  closePage?: (label: string) => MenuItemConstructorOptions,
 ): MenuItemConstructorOptions {
+  if (closePage !== undefined && (item.role === "close" || item.id === "dsh-page-close")) return closePage(item.label ?? "Close");
   return {
     ...item,
     ...(Array.isArray(item.submenu)
-      ? { submenu: item.submenu.map(cloneTemplate) }
+      ? { submenu: item.submenu.map(child => cloneTemplate(child, closePage)) }
       : {}),
   };
 }

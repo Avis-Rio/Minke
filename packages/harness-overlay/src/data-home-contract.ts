@@ -2,8 +2,6 @@
 
 export const DATA_HOME_SETTINGS_READ_CHANNEL =
   "minke:data-home:read";
-export const DATA_HOME_CHOOSE_DIRECTORY_CHANNEL =
-  "minke:data-home:choose-directory";
 export const DATA_HOME_MIGRATION_PLAN_CHANNEL =
   "minke:data-home:plan-migration";
 export const DATA_HOME_MIGRATION_SCHEDULE_CHANNEL =

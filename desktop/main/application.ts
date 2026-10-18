@@ -1,13 +1,15 @@
+import { existsSync } from "node:fs";
+import { installDesktopShortcuts } from "./desktop-shortcuts.ts";
 import {
   app,
   clipboard,
   dialog,
   ipcMain,
   Menu,
+  powerMonitor,
   safeStorage,
   session,
   type IpcMainInvokeEvent,
-  type OpenDialogOptions,
 } from "electron";
 import { join } from "node:path";
 import {
@@ -27,9 +29,6 @@ import {
   resolveDesktopLocale,
 } from "@minke/desktop/locale-contract";
 import {
-  type ShortcutBindings,
-} from "@minke/harness-overlay/shortcut-contract";
-import {
   DEFAULT_APP_UPDATE_SETTINGS,
 } from "@minke/harness-overlay/app-update-contract";
 import {
@@ -41,8 +40,12 @@ import {
 import {
   DEFAULT_WEB_SEARCH_SETTINGS,
 } from "@minke/harness-overlay/web-search-settings-contract";
+import { DesktopQuitConfirmation } from "./quit-confirmation.ts";
+import { DesktopFatalRecovery } from "./fatal-recovery.ts";
+import { RendererConsoleTail, writeDesktopCrashReport, type DesktopFailureSource } from "./crash-report.ts";
 import { requestDesktopRestart } from "./app-restart";
 import { createLocalModelStatusProbe } from "./local-model-status.ts";
+import { readLoginShellEnvironment, resolveLoginShellTimeout } from "./login-shell-environment.ts";
 import {
   prepareDesktopApplication,
 } from "./application-entry";
@@ -50,6 +53,8 @@ import {
   detectAppUpdateTarget,
 } from "./app-update";
 import { AppUpdateRuntime } from "./app-update-runtime";
+import { bindDesktopUpdates } from "./desktop-updates.ts";
+import { DESKTOP_UPDATE_IPC } from "@minke/harness-overlay/shared-updates-contract.ts";
 import {
   AgentBrowserRuntime,
   SqliteAgentBrowserHistory,
@@ -134,13 +139,10 @@ import {
   type ShortcutMenuBinding,
 } from "./shortcut-menu";
 import {
-  bindShortcutSettingsIpc,
-  type ShortcutSettingsBinding,
-} from "./shortcut-settings";
-import {
   bindTerminalSettingsIpc,
   type TerminalSettingsBinding,
 } from "./terminal-settings";
+import { migrateTerminalFontProfile } from "./profile-migration";
 import {
   bindWebSearchSettingsIpc,
   type WebSearchSettingsBinding,
@@ -153,6 +155,7 @@ interface BeforeQuitEvent {
 /** Coordinates process-wide startup, recovery, and ordered shutdown. */
 class DesktopApplication {
   #appUpdate: AppUpdateRuntime | undefined;
+  #desktopUpdatesBinding: ReturnType<typeof bindDesktopUpdates> | undefined;
   #appUpdateSettingsBinding:
     | AppUpdateSettingsBinding
     | undefined;
@@ -164,7 +167,7 @@ class DesktopApplication {
   #windows: MainWindowRuntime | undefined;
   #desktopLocale: DesktopLocaleRuntime | undefined;
   #shortcutMenuBinding: ShortcutMenuBinding | undefined;
-  #shortcutSettingsBinding: ShortcutSettingsBinding | undefined;
+  #desktopShortcuts: ReturnType<typeof installDesktopShortcuts> | undefined;
   #terminalSettingsBinding: TerminalSettingsBinding | undefined;
   #webSearchSettingsBinding:
     | WebSearchSettingsBinding
@@ -181,14 +184,47 @@ class DesktopApplication {
   #requestedExitCode: number | undefined;
   #quitting = false;
   #shutdownStarted = false;
-  #recovering = false;
+  #quitAuthorized = false;
+  #sessionEnding = false;
+  #shutdownComplete = false;
+  #stopPromise: Promise<void> | undefined;
+  #restartPending = false;
+  #pluginRecovery: PluginRecoveryRuntime | undefined;
+  readonly #diagnostics = new Set<Promise<string>>();
+  readonly #rendererConsole = new RendererConsoleTail();
+  readonly #quitConfirmation = new DesktopQuitConfirmation({
+    inspect: () => this.#runtime?.inspectQuit(),
+    text: key => this.#desktopText(key),
+    show: options => dialog.showMessageBox(options),
+    focus: () => { if (process.platform === "darwin") app.focus({ steal: true }); },
+  });
+  readonly #recovery = new DesktopFatalRecovery({
+    text: (key, params) => this.#desktopText(key, params),
+    show: options => dialog.showMessageBox(options),
+    writeReport: (error, source) => this.#writeDiagnostic(error, source),
+    stop: () => this.#stopOwnedProcesses(),
+    canEnableSafeMode: () => this.#pluginRecovery !== undefined,
+    enableSafeMode: async () => {
+      if (this.#pluginRecovery === undefined) throw new Error("Plugin settings are unavailable");
+      await this.#pluginRecovery.setSafeMode(true);
+    },
+    restart: () => this.#restartApplication(),
+    exit: () => { this.#quitAuthorized = true; app.quit(); },
+  });
   #revealWindowWhenReady = false;
+  #loginShellRead = new AbortController();
 
   async start(): Promise<void> {
     if (!prepareDesktopApplication(app)) return;
     app.on("second-instance", () => this.#showMainWindow());
 
     await app.whenReady();
+    powerMonitor.on("shutdown", () => this.#endSystemSession());
+    const loginShellEnvironment = readLoginShellEnvironment(process.env, {
+      homeDirectory: app.getPath("home"),
+      timeoutMs: resolveLoginShellTimeout(process.env),
+      signal: this.#loginShellRead.signal,
+    });
     const locale = new DesktopLocaleRuntime(
       resolveDesktopLocale(app.getLocale()),
     );
@@ -217,12 +253,20 @@ class DesktopApplication {
     const windows = new MainWindowRuntime({
       agentBrowser,
       locale,
+      attachShortcuts: window => this.#desktopShortcuts?.attach(window),
+      attachGuestShortcuts: (window, guest, name) => this.#desktopShortcuts?.attachGuest(window, guest, name),
       harnessUrl: () => this.#harnessLifecycle?.url,
       attachHarness: async (window) => {
         await this.#harnessLifecycle?.attach(window);
       },
       refreshMenu: () =>
         this.#shortcutMenuBinding?.refreshBaseMenu(),
+      reportFailure: error => this.#reportFailure(error, "renderer"),
+      consoleError: message => this.#rendererConsole.append(message),
+      canClose: () => this.#quitting || this.#sessionEnding,
+      requestQuit: () => app.quit(),
+      sessionEnding: () => this.#endSystemSession(),
+      sessionContinuing: () => { this.#sessionEnding = false; },
     });
     this.#windows = windows;
     windows.installPermissionPolicy();
@@ -231,7 +275,21 @@ class DesktopApplication {
       app.getPath("userData"),
     );
     const shortcutStore = minkeConfig.shortcuts;
+    this.#desktopShortcuts = installDesktopShortcuts(
+      () => windows.current, app.getPath("userData"),
+      process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux",
+      bindings => this.#shortcutMenuBinding?.updateBindings(bindings),
+      event => windows.authorize(event),
+      existsSync(minkeConfig.path) ? () => shortcutStore.read() : undefined,
+      undefined,
+      bindings => { void dialog.showMessageBox({ type: "info",
+        title: this.#desktopText("shortcuts.migrationTitle"),
+        message: this.#desktopText("shortcuts.migrationTitle"),
+        detail: this.#desktopText("shortcuts.migrationDetail", { bindings: bindings.join("\n"), path: minkeConfig.path }),
+      }).catch(error => console.error("Unable to show shortcut migration notice", error)); },
+    );
     const terminalSettingsStore = minkeConfig.terminal;
+    const hasLegacyTerminalSettings = existsSync(minkeConfig.path);
     const modelRuntimeSettingsStore = minkeConfig.modelRuntime;
     const remoteSettingsStore = minkeConfig.remote;
     const pluginSettingsStore = minkeConfig.plugins;
@@ -243,18 +301,6 @@ class DesktopApplication {
       homeDirectory: app.getPath("home"),
       environment: process.env,
       configuration: minkeConfig.dshHome,
-      chooseDirectory: async (defaultPath) => {
-        const options = this.#dataHomeOpenDialogOptions(
-          defaultPath,
-        );
-        const window = windows.current;
-        const result = window === undefined
-          ? await dialog.showOpenDialog(options)
-          : await dialog.showOpenDialog(window, options);
-        return result.canceled
-          ? undefined
-          : result.filePaths[0];
-      },
       restart: () => this.#scheduleDesktopRestart(),
     });
     const migrationState =
@@ -268,10 +314,6 @@ class DesktopApplication {
       );
     }
     const activeDshHome = await dataHomeManager.activePath();
-    const activeDshEnvironment = buildDshChildEnvironment(
-      activeDshHome,
-      process.env,
-    );
     try {
       await clearLegacyPluginCatalogCache(
         app.getPath("userData"),
@@ -284,7 +326,16 @@ class DesktopApplication {
     }
 
     await windows.create();
+    if (this.#recovery.active || this.#quitting) return;
     if (this.#revealWindowWhenReady) windows.show();
+
+    const loginShell = await loginShellEnvironment;
+    if (this.#quitting || this.#recovery.active) return;
+    for (const failure of loginShell.failures) {
+      console.warn(`Minke login shell: ${failure.shell} failed (${failure.reason})`);
+    }
+    const launchEnvironment = loginShell.environment;
+    const activeDshEnvironment = buildDshChildEnvironment(activeDshHome, launchEnvironment);
 
     const pluginRecovery = new PluginRecoveryRuntime({
       runtimeRoot: this.#runtimeRoot(),
@@ -293,9 +344,10 @@ class DesktopApplication {
       environment: activeDshEnvironment,
       settings: pluginSettingsStore,
     });
+    this.#pluginRecovery = pluginRecovery;
     const localModelCommands = await discoverLocalModelCommands({
       homeDirectory: app.getPath("home"),
-      pathValue: process.env.PATH,
+      pathValue: launchEnvironment.PATH,
       platform: process.platform,
       ...(process.env.LOCALAPPDATA === undefined
         ? {}
@@ -304,7 +356,7 @@ class DesktopApplication {
     const discoverRemote = () =>
       discoverRemoteCommands({
         homeDirectory: app.getPath("home"),
-        pathValue: process.env.PATH,
+        pathValue: launchEnvironment.PATH,
         platform: process.platform,
         ...(process.env.LOCALAPPDATA === undefined
           ? {}
@@ -317,7 +369,6 @@ class DesktopApplication {
       lmStudio: localModelCommands.lmStudio !== undefined,
       ollama: localModelCommands.ollama !== undefined,
     };
-    let shortcutBindings: ShortcutBindings = {};
     let modelRuntimeSettings = {
       lmStudio: { enabled: false },
       ollama: { enabled: false },
@@ -342,14 +393,6 @@ class DesktopApplication {
       ...DEFAULT_BROWSER_SETTINGS,
     };
     try {
-      shortcutBindings = await shortcutStore.read();
-    } catch (error) {
-      console.error(
-        "Unable to read native shortcut menu settings:",
-        error,
-      );
-    }
-    try {
       modelRuntimeSettings =
         await modelRuntimeSettingsStore.read();
     } catch (error) {
@@ -369,6 +412,12 @@ class DesktopApplication {
     // Complete migration before composing the Profile; a failure must not
     // start previously disabled third-party code.
     pluginManagement = await pluginRecovery.migrateLegacyProfile();
+    await migrateTerminalFontProfile({
+      runtimeRoot: this.#runtimeRoot(),
+      dshHome: activeDshHome,
+      electronExecutable: process.execPath,
+      environment: activeDshEnvironment,
+    }, hasLegacyTerminalSettings ? await terminalSettingsStore.read() : undefined);
     try {
       webSearchSettings = await webSearchSettingsStore.read();
     } catch (error) {
@@ -423,20 +472,13 @@ class DesktopApplication {
     this.#shortcutMenuBinding = bindShortcutMenu(
       Menu,
       locale,
-      shortcutBindings,
+      {},
       (id) => {
-        void windows.invokeShortcut(id);
+        windows.show();
+        this.#desktopShortcuts?.invoke(id);
       },
-    );
-    this.#shortcutSettingsBinding = bindShortcutSettingsIpc(
-      ipcMain,
-      shortcutStore,
-      (candidate) =>
-        windows.authorize(
-          candidate as IpcMainInvokeEvent,
-        ),
-      (bindings) =>
-        this.#shortcutMenuBinding?.updateBindings(bindings),
+      process.platform,
+      label => (this.#desktopShortcuts!.fileMenu({ fileMenu: "", closePage: label }).submenu as Electron.MenuItemConstructorOptions[])[0]!,
     );
     this.#terminalSettingsBinding = bindTerminalSettingsIpc(
       ipcMain,
@@ -490,18 +532,32 @@ class DesktopApplication {
             settings.autoDownload,
           );
         },
-        async () =>
-          (await this.#appUpdate?.checkNow()) ?? "unavailable",
         (candidate) =>
           windows.authorize(
             candidate as IpcMainInvokeEvent,
           ),
       );
 
+    this.#desktopUpdatesBinding = bindDesktopUpdates(ipcMain, {
+      status: () => this.#appUpdate?.status() ?? { phase: "idle" },
+      open: async () => {
+        if (this.#appUpdate !== undefined) await this.#appUpdate.open();
+        else {
+          const options = { type: "info" as const, title: this.#desktopText("update.availableTitle"),
+            message: this.#desktopText("update.unavailable") };
+          const owner = windows.current;
+          if (owner === undefined || owner.isDestroyed()) await dialog.showMessageBox(options);
+          else await dialog.showMessageBox(owner, options);
+        }
+      },
+    }, event => windows.authorize(event));
+
+    if (this.#quitting || this.#recovery.active) return;
     const runtime = new HarnessRuntime({
       runtimeRoot: this.#runtimeRoot(),
       dshHome: activeDshHome,
       electronExecutable: process.execPath,
+      environment: activeDshEnvironment,
       modelRuntimes: {
         lmStudio: {
           enabled:
@@ -523,6 +579,7 @@ class DesktopApplication {
       pluginManagement,
       webSearch: webSearchSettings,
       agentBrowser,
+      onShutdownDiagnostic: error => this.#reportFailure(error, "host"),
       onUnexpectedExit: (exit) => {
         void this.#handleUnexpectedExit(exit);
       },
@@ -544,11 +601,12 @@ class DesktopApplication {
             runtimeId,
           );
         },
-        createLocalModelStatusProbe(localModelCommands),
+        createLocalModelStatusProbe(localModelCommands, { environment: launchEnvironment }),
       );
     const remoteAccess = new RemoteAccessRuntime({
       settings: remoteSettings,
       discoverCommands: discoverRemote,
+      environment: launchEnvironment,
       replaceTrustedHosts: (trustedHosts) =>
         runtime.replaceTrustedHosts(trustedHosts),
     });
@@ -690,6 +748,7 @@ class DesktopApplication {
       requestNavigationRetry: (error) => this.#requestNavigationRetry(error),
     });
     await this.#startHarness();
+    if (this.#quitting || this.#recovery.active) return;
     if (app.isPackaged) {
       try {
         const target = await detectAppUpdateTarget(
@@ -702,6 +761,10 @@ class DesktopApplication {
           currentVersion: app.getVersion(),
           userDataPath: app.getPath("userData"),
           window: () => this.#windows?.current,
+          changed: state => {
+            const owner = this.#windows?.current;
+            if (owner !== undefined && !owner.isDestroyed()) owner.webContents.send(DESKTOP_UPDATE_IPC.changed, state);
+          },
           text: (key, params) =>
             this.#desktopText(key, params),
         });
@@ -721,50 +784,62 @@ class DesktopApplication {
   }
 
   beforeQuit(event: BeforeQuitEvent): void {
-    this.#quitting = true;
-    this.#disposeApplicationBindings();
-    if (this.#shutdownStarted) return;
-    if (
-      this.#runtime === undefined &&
-      this.#remoteAccess === undefined &&
-      this.#remoteHub === undefined
-    ) {
-      this.#agentBrowser?.dispose();
-      this.#agentBrowser = undefined;
-      if (this.#requestedExitCode !== undefined) {
-        event.preventDefault();
-        app.exit(this.#requestedExitCode);
-      }
+    if (this.#shutdownComplete) return;
+    event.preventDefault();
+    if (!this.#quitAuthorized && !this.#sessionEnding && !this.#recovery.active) {
+      void this.#quitConfirmation.confirm().then(confirmed => {
+        if (confirmed && !this.#quitting) {
+          this.#quitAuthorized = true;
+          app.quit();
+        }
+      }).catch(error => console.error("Unable to confirm quit", error));
       return;
     }
-    event.preventDefault();
+    this.#quitConfirmation.dispose();
+    this.#recovery.dispose();
+    if (this.#shutdownStarted) return;
     this.#shutdownStarted = true;
-    const activeRuntime = this.#runtime;
-    const activeRemote = this.#remoteAccess;
-    const activeRemoteHub = this.#remoteHub;
-    this.#remoteHub = undefined;
-    void (async () => {
+    void this.#stopOwnedProcesses().catch(error => {
+      this.#reportFailure(error, "shutdown");
+    }).finally(async () => {
+      await this.#flushDiagnostics();
+      this.#shutdownComplete = true;
+      if (this.#requestedExitCode === undefined) app.quit();
+      else app.exit(this.#requestedExitCode);
+    });
+  }
+
+  #stopOwnedProcesses(): Promise<void> {
+    if (this.#stopPromise !== undefined) return this.#stopPromise;
+    this.#quitting = true;
+    this.#loginShellRead.abort();
+    this.#disposeApplicationBindings();
+    const operation = (async () => {
       try {
-        await activeRemoteHub?.dispose();
+        await this.#remoteHub?.dispose();
       } finally {
         try {
-          await activeRemote?.stop();
+          await this.#remoteAccess?.stop();
         } finally {
           try {
-            await activeRuntime?.stop();
+            await this.#runtime?.stop();
           } finally {
             this.#agentBrowser?.dispose();
             this.#agentBrowser = undefined;
           }
         }
       }
-    })().finally(() => {
-      if (this.#requestedExitCode === undefined) {
-        app.quit();
-      } else {
-        app.exit(this.#requestedExitCode);
-      }
+    })();
+    this.#stopPromise = operation;
+    void operation.catch(() => {
+      if (this.#stopPromise === operation) this.#stopPromise = undefined;
     });
+    return operation;
+  }
+
+  #endSystemSession(): void {
+    this.#sessionEnding = true;
+    this.#quitConfirmation.cancelPending();
   }
 
   windowAllClosed(): void {
@@ -772,15 +847,42 @@ class DesktopApplication {
   }
 
   reportStartupFailure(error: unknown): void {
-    if (this.#quitting) return;
-    console.error("Minke startup failed:", error);
-    dialog.showErrorBox(
-      this.#desktopText("runtime.startupFailedTitle"),
-      error instanceof Error
-        ? error.stack ?? error.message
-        : String(error),
-    );
-    app.quit();
+    this.#reportFailure(error, "startup");
+  }
+
+  #reportFailure(error: unknown, source: DesktopFailureSource): void {
+    if (this.#quitting || this.#sessionEnding) {
+      void this.#writeDiagnostic(error, source).catch(failure => console.error("Unable to write shutdown diagnostics", failure));
+      return;
+    }
+    if (this.#recovery.active) return;
+    this.#quitConfirmation.dispose();
+    const reporting = app.isReady()
+      ? this.#recovery.report(error, source)
+      : app.whenReady().then(() => this.#recovery.report(error, source));
+    void reporting.catch(failure => {
+      console.error("Minke recovery failed", failure);
+      this.#quitAuthorized = true;
+      app.quit();
+    });
+  }
+
+  #writeDiagnostic(error: unknown, source: DesktopFailureSource): Promise<string> {
+    const phase = this.#quitting || this.#sessionEnding ? "shutdown"
+      : this.#harnessLifecycle?.url === undefined ? "startup" : "running";
+    const report = writeDesktopCrashReport(join(app.getPath("userData"), "logs"), error, source,
+      this.#rendererConsole.snapshot(), app.getVersion(), new Date(), phase);
+    this.#diagnostics.add(report);
+    void report.then(() => this.#diagnostics.delete(report), () => this.#diagnostics.delete(report));
+    return report;
+  }
+
+  async #flushDiagnostics(): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([Promise.allSettled([...this.#diagnostics]),
+        new Promise<void>(resolve => { timer = setTimeout(resolve, 1_000); })]);
+    } finally { clearTimeout(timer); }
   }
 
   #desktopText(
@@ -791,21 +893,6 @@ class DesktopApplication {
       translateDesktop("en", key, params);
   }
 
-  #dataHomeOpenDialogOptions(
-    defaultPath: string,
-  ): OpenDialogOptions {
-    return {
-      title: this.#desktopText(
-        "dataHome.chooseDirectoryTitle",
-      ),
-      defaultPath,
-      buttonLabel: this.#desktopText(
-        "dataHome.chooseDirectoryButton",
-      ),
-      properties: ["openDirectory", "createDirectory"],
-    };
-  }
-
   #runtimeRoot(): string {
     return app.isPackaged
       ? join(process.resourcesPath, "host")
@@ -813,11 +900,19 @@ class DesktopApplication {
   }
 
   #scheduleDesktopRestart(): void {
+    if (this.#restartPending || this.#quitting) return;
+    this.#restartPending = true;
     setTimeout(() => {
-      requestDesktopRestart(app, (exitCode) => {
-        this.#requestedExitCode = exitCode;
-      });
+      void this.#quitConfirmation.confirm("restart").then(confirmed => {
+        if (confirmed && !this.#quitting) this.#restartApplication();
+      }).catch(error => console.error("Unable to confirm restart", error))
+        .finally(() => { this.#restartPending = false; });
     }, 100);
+  }
+
+  #restartApplication(): void {
+    this.#quitAuthorized = true;
+    requestDesktopRestart(app, exitCode => { this.#requestedExitCode = exitCode; });
   }
 
   #showMainWindow(): void {
@@ -830,12 +925,14 @@ class DesktopApplication {
   }
 
   async #startHarness(): Promise<void> {
+    if (this.#quitting || this.#recovery.active) return;
     await this.#harnessLifecycle?.start(
       this.#windows?.current,
     );
   }
 
   async #requestNavigationRetry(error: HarnessNavigationError): Promise<boolean> {
+    if (this.#recovery.active || this.#quitting) return false;
     const window = this.#windows?.current;
     if (this.#quitting || window === undefined || window.isDestroyed()) {
       return false;
@@ -853,86 +950,32 @@ class DesktopApplication {
       cancelId: 1,
       noLink: true,
     });
-    if (this.#quitting) return false;
+    if (this.#quitting || this.#recovery.active) return false;
     if (result.response === 0 && !window.isDestroyed()) return true;
-    // The user already chose to quit; do not show another startup error box.
-    this.#quitting = true;
+    // This dialog already obtained the quit decision.
+    this.#quitAuthorized = true;
     app.quit();
     return false;
   }
 
-  async #handleUnexpectedExit(
-    exit: HarnessRuntimeExit,
-  ): Promise<void> {
-    if (this.#quitting || this.#recovering) return;
-    this.#recovering = true;
+  #handleUnexpectedExit(exit: HarnessRuntimeExit): void {
     this.#harnessLifecycle?.clear();
-    console.error(
-      "Harness runtime exited unexpectedly:",
-      exit,
-    );
-
-    try {
-      try {
-        await this.#remoteAccess?.detach();
-      } catch (error) {
-        console.error(
-          "Remote access failed to detach:",
-          error,
-        );
-      }
-      await this.#windows?.loadBootstrap();
-      const detail = [
-        this.#desktopText("runtime.exitCode", {
-          value: String(exit.code),
-        }),
-        this.#desktopText("runtime.signal", {
-          value: String(exit.signal),
-        }),
-        "",
-        exit.output.slice(-4_000),
-      ].join("\n");
-      const result = await dialog.showMessageBox({
-        type: "error",
-        title: this.#desktopText("runtime.stoppedTitle"),
-        message: this.#desktopText("runtime.stoppedMessage"),
-        detail,
-        buttons: [
-          this.#desktopText("runtime.restart"),
-          this.#desktopText("runtime.quit"),
-        ],
-        defaultId: 0,
-        cancelId: 1,
-        noLink: true,
-      });
-      if (result.response === 0) {
-        await this.#startHarness();
-      } else {
-        app.quit();
-      }
-    } catch (error) {
-      if (this.#quitting) return;
-      dialog.showErrorBox(
-        this.#desktopText("runtime.restartFailedTitle"),
-        error instanceof Error
-          ? error.stack ?? error.message
-          : String(error),
-      );
-      app.quit();
-    } finally {
-      this.#recovering = false;
-    }
+    this.#reportFailure(new Error(
+      `Harness exited (code ${String(exit.code)}, signal ${String(exit.signal)})\n${exit.output}`,
+    ), "host");
   }
 
   #disposeApplicationBindings(): void {
     this.#appUpdate?.dispose();
     this.#appUpdate = undefined;
+    this.#desktopUpdatesBinding?.dispose();
+    this.#desktopUpdatesBinding = undefined;
     this.#appUpdateSettingsBinding?.dispose();
     this.#appUpdateSettingsBinding = undefined;
     this.#shortcutMenuBinding?.dispose();
     this.#shortcutMenuBinding = undefined;
-    this.#shortcutSettingsBinding?.dispose();
-    this.#shortcutSettingsBinding = undefined;
+    this.#desktopShortcuts?.dispose();
+    this.#desktopShortcuts = undefined;
     this.#terminalSettingsBinding?.dispose();
     this.#terminalSettingsBinding = undefined;
     this.#webSearchSettingsBinding?.dispose();

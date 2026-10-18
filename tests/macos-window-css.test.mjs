@@ -13,10 +13,6 @@ const macOSWindowSource = readFileSync(
   new URL("../desktop/main/macos-window.ts", import.meta.url),
   "utf8",
 );
-const macOSWindowControlsSource = readFileSync(
-  new URL("../desktop/main/macos-window-controls.ts", import.meta.url),
-  "utf8",
-);
 const mainWindowSource = readFileSync(
   new URL("../desktop/main/main-window.ts", import.meta.url),
   "utf8",
@@ -97,13 +93,6 @@ const overlayCompositionSource = [
     ),
   ),
 ].join("\n");
-const harnessColumnsSource = readFileSync(
-  new URL(
-    "../vendor/deepseek-harness/packages/client/ui-layout/src/client/columns.ts",
-    import.meta.url,
-  ),
-  "utf8",
-);
 const harnessSidebarCss = readFileSync(
   new URL(
     "../vendor/deepseek-harness/packages/client/ui-sidebar/src/client/SidebarRoot.module.css",
@@ -166,15 +155,15 @@ test("Electron wires native desktop capabilities through preload", () => {
     desktopMainSource,
     /preload:\s*join\(__dirname,\s*"desktop-preload\.js"\)/,
   );
-  assert.match(desktopMainSource, /bindWindowTheme\(window,\s*nativeTheme\)/);
+  assert.match(desktopMainSource, /bindWindowTheme\(window,\s*nativeTheme,\s*authorizeWindow\)/);
   assert.match(desktopPreloadSource, /new MutationObserver/);
   assert.match(
     desktopPreloadSource,
-    /attributeFilter:\s*\["style"\]/,
+    /attributeFilter:\s*\[WINDOW_THEME_SOURCE_ATTRIBUTE\]/,
   );
   assert.match(
     desktopPreloadSource,
-    /ipcRenderer\.send\(WINDOW_THEME_CHANNEL,\s*message\)/,
+    /ipcRenderer\.send\(WINDOW_THEME_CHANNEL,\s*source\)/,
   );
   assert.doesNotMatch(desktopPreloadSource, /data-ds-theme-preference/);
   assert.match(
@@ -187,7 +176,7 @@ test("Electron wires native desktop capabilities through preload", () => {
   );
   assert.match(
     desktopPreloadSource,
-    /Object\.freeze\(\{\s*agentBrowser,\s*appUpdate,\s*about,\s*browser,\s*dataHome,\s*files,\s*locale,\s*modelRuntime,\s*pluginRecovery,\s*remote,\s*remoteHub,\s*sessionLogs,\s*tabs,\s*terminal,\s*webSearch,\s*shortcuts,\s*surface,\s*windowTheme,\s*\}\)/,
+    /Object\.freeze\(\{\s*agentBrowser,\s*appUpdate,\s*about,\s*browser,\s*dataHome,\s*files,\s*modelRuntime,\s*pluginRecovery,\s*remote,\s*remoteHub,\s*tabs,\s*terminal,\s*webSearch,\s*surface,\s*\}\)/,
   );
   assert.match(
     desktopPreloadSource,
@@ -195,15 +184,11 @@ test("Electron wires native desktop capabilities through preload", () => {
   );
   assert.match(
     desktopPreloadSource,
-    /ipcRenderer\.on\(SHORTCUT_INVOKE_CHANNEL,\s*wrapped\)/,
+    /subscribeShortcut<DesktopShortcutInput>\(SHORTCUT_IPC\.input/,
   );
   assert.match(
     desktopPreloadSource,
-    /ipcRenderer\.off\(SHORTCUT_INVOKE_CHANNEL,\s*wrapped\)/,
-  );
-  assert.match(
-    desktopPreloadSource,
-    /ipcRenderer\.invoke\(\s*SESSION_LOG_EXPORT_CHANNEL/u,
+    /ipcRenderer\.off\(channel, handle\)/,
   );
   assert.match(
     desktopPreloadSource,
@@ -378,54 +363,9 @@ test("macOS New Session keeps the composer boundary on its transparent surface",
   );
 });
 
-test("the smaller traffic lights use the tuned default-rail position", () => {
-  const trafficLightPosition = macOSWindowSource.match(
-    /trafficLightPosition:\s*\{\s*x:\s*(\d+),\s*y:\s*(\d+)\s*\}/,
-  );
-  const sidebarWidth = harnessColumnsSource.match(
-    /SIDEBAR_COLLAPSED\s*=\s*(\d+)/,
-  );
-  assert.ok(trafficLightPosition, "traffic-light position must remain explicit");
-  assert.ok(sidebarWidth, "collapsed sidebar width must remain explicit");
-  assert.equal(Number(trafficLightPosition[2]), 8);
-  const fixedNativeClusterWidth = 10 + 14 * 2;
-  assert.equal(
-    Number(trafficLightPosition[1]),
-    (Number(sidebarWidth[1]) - fixedNativeClusterWidth) / 2 - 1,
-    "the traffic-light frames must sit one pixel toward the window edge",
-  );
-});
-
-test("the native window controls retain their system sizing", () => {
-  const sidebarWidth = harnessColumnsSource.match(
-    /SIDEBAR_COLLAPSED\s*=\s*(\d+)/,
-  );
-  assert.ok(sidebarWidth, "collapsed sidebar width must remain explicit");
-  assert.match(
-    macOSWindowControlsSource,
-    /adapter\.attach\(/,
-  );
-  assert.doesNotMatch(macOSWindowControlsSource, /adapter\.setSize\(/);
-  assert.doesNotMatch(macOSWindowControlsSource, /adapter\.setPitch\(/);
-  assert.doesNotMatch(macOSWindowControlsSource, /setImmediate\(/);
-  assert.match(
-    macOSWindowControlsSource,
-    /join\(app\.getAppPath\(\), "node_modules", "sys", "index\.js"\)/,
-  );
-  assert.match(
-    macOSWindowControlsSource,
-    /nativeRequire\(\s*sysEntryPath\(\)/,
-  );
-  assert.match(
-    macOSWindowControlsSource,
-    /candidate\.enable\("sys\.lencx\.me"\)/,
-  );
-  assert.match(
-    desktopMainSource,
-    /bindMacOSWindowButtonSpacing\(\s*window/,
-  );
-  assert.equal(Number(sidebarWidth[1]), 56);
-
+test("macOS window controls use Electron and AppKit defaults", () => {
+  assert.doesNotMatch(macOSWindowSource, /trafficLightPosition/);
+  assert.doesNotMatch(desktopMainSource, /bindMacOSWindowButtonSpacing|macos-window-controls/);
 });
 
 test("the desktop sidebar toggle keeps one stable glyph across hover", () => {

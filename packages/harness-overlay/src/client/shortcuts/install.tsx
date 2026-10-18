@@ -9,10 +9,6 @@ import type {
   HarnessClientContext,
 } from "../core/context.ts";
 import {
-  desktopSessionLogsPort,
-  desktopShortcutStore,
-} from "../desktop/index.ts";
-import {
   CommandPalette,
   createCommandPaletteRuntime,
   installCommandPaletteStyles,
@@ -24,9 +20,6 @@ import {
 import type {
   TabsRuntimes,
 } from "../tabs/install.tsx";
-import type {
-  MinkeSettingsRuntime,
-} from "../minke-settings/index.ts";
 import {
   focusComposerInput,
   hasOpenModalSurface,
@@ -38,19 +31,9 @@ import {
   type ShortcutLocaleKey,
   type ShortcutTranslate,
 } from "./locales.ts";
-import {
-  createShortcutSectionSource,
-  type Observable,
-  type ShortcutSectionState,
-} from "./projection.ts";
 import { ShortcutRuntime } from "./runtime.ts";
 import { SessionNavigationHistory } from "./session-navigation.ts";
-import {
-  ShortcutSettingsPage,
-} from "./ShortcutSection.tsx";
-import {
-  installShortcutStyles,
-} from "./styles.ts";
+import { installSessionExport } from "./session-export.ts";
 import type {
   ShortcutAction,
 } from "./runtime.ts";
@@ -100,7 +83,6 @@ export function createNewSessionShortcutAction(
 export function installShortcuts(
   ctx: HarnessClientContext,
   tabsRuntimes: TabsRuntimes | undefined,
-  settings: MinkeSettingsRuntime,
 ): void {
   ctx.effect(
     () =>
@@ -110,16 +92,10 @@ export function installShortcuts(
       }),
     "minke-overlay: shortcut dictionaries",
   );
-  ctx.effect(
-    () => installShortcutStyles(),
-    "minke-overlay: shortcut styles",
-  );
   const t = ctx.locale.bind<ShortcutLocaleKey>(
     SHORTCUTS_NAMESPACE,
   ) as ShortcutTranslate;
-  const shortcutStore = desktopShortcutStore();
-  const sessionLogsPort = desktopSessionLogsPort();
-  const runtime = new ShortcutRuntime(shortcutStore);
+  const runtime = new ShortcutRuntime(ctx.shortcuts);
   ctx.effect(
     () =>
       ctx.locale.register(PALETTE_NAMESPACE, {
@@ -199,13 +175,6 @@ export function installShortcuts(
       runtime.dispose();
     },
     "minke-overlay: shortcut runtime",
-  );
-  ctx.effect(
-    () =>
-      shortcutStore.subscribe((id) => {
-        runtime.invoke(id);
-      }),
-    "minke-overlay: native shortcut menu",
   );
   ctx.effect(
     () =>
@@ -367,39 +336,7 @@ export function installShortcuts(
       "minke-overlay: Toggle Bottom Panel shortcut",
     );
   }
-  if (sessionLogsPort.available) {
-    ctx.effect(
-      () =>
-        runtime.register({
-          id: "session.export",
-          label: () => paletteT("action.exportSession"),
-          defaultBinding: null,
-          shortcutConfigurable: false,
-          palette: {
-            group: "session",
-            order: 40,
-            keywords: () => [paletteT("keywords.exportSession")],
-            disabledReason: () =>
-              mainSessionId(ctx.sessions.list.getSnapshot()) === undefined
-                ? paletteT("disabled.activeSession")
-                : undefined,
-          },
-          run: () => {
-            const sessionId = mainSessionId(ctx.sessions.list.getSnapshot());
-            if (sessionId === undefined) return;
-            void sessionLogsPort
-              .export(sessionId)
-              .catch((error: unknown) => {
-                console.warn(
-                  "Minke could not export the current Session",
-                  error,
-                );
-              });
-          },
-        }),
-      "minke-overlay: Export Session palette action",
-    );
-  }
+  installSessionExport(ctx, runtime, paletteT);
   const openTab = (
     workspace: TabsRuntimes["workspaces"]["right"],
     creatorId: string,
@@ -521,28 +458,15 @@ export function installShortcuts(
       "minke-overlay: Tab create shortcut bindings",
     );
   }
-  void runtime.initialize();
+  ctx.effect(() => {
+    const acknowledge = (): void => {
+      const snapshot = ctx.shortcuts.config.getSnapshot();
+      if (snapshot.status === "loading") return;
+      const bridge = (window as Window & { dshDesktop?: { shortcutsAccepted?: (revision: string) => void } }).dshDesktop;
+      bridge?.shortcutsAccepted?.(snapshot.revision);
+    };
+    acknowledge();
+    return ctx.shortcuts.config.subscribe(acknowledge);
+  }, "minke-overlay: accepted native shortcut configuration");
 
-  const source: Observable<ShortcutSectionState> =
-    createShortcutSectionSource(runtime, ctx.locale);
-  ctx.effect(
-    () =>
-      settings.register({
-        id: "shortcuts",
-        order: 20,
-        label: () => t("nav"),
-        icon: "shortcuts",
-        keepAlive: false,
-        render: () => (
-          <ShortcutSettingsPage
-            source={source}
-            platform={runtime.platform}
-            setBinding={runtime.setBinding.bind(runtime)}
-            resetBinding={runtime.resetBinding.bind(runtime)}
-            t={t}
-          />
-        ),
-      }),
-    "minke-overlay: shortcuts Minke Settings page",
-  );
 }

@@ -1,58 +1,7 @@
-/** Normalize keyboard events and present platform-native shortcuts. */
+/** Present effective DSH shortcut bindings in Minke palette and tab hints. */
 
 export type ShortcutPlatform = "apple" | "other";
 
-const MODIFIER_KEYS = new Set(["Alt", "Control", "Meta", "Shift"]);
-const PRINTABLE_KEYS: Readonly<Record<string, string>> = {
-  " ": "Space",
-  ",": "Comma",
-  "<": "Comma",
-  ".": "Period",
-  ">": "Period",
-  "/": "Slash",
-  "?": "Slash",
-  ";": "Semicolon",
-  ":": "Semicolon",
-  "'": "Quote",
-  "\"": "Quote",
-  "[": "BracketLeft",
-  "{": "BracketLeft",
-  "]": "BracketRight",
-  "}": "BracketRight",
-  "\\": "Backslash",
-  "|": "Backslash",
-  "-": "Minus",
-  "_": "Minus",
-  "=": "Equal",
-  "+": "Equal",
-  "`": "Backquote",
-  "~": "Backquote",
-  "!": "1",
-  "@": "2",
-  "#": "3",
-  "$": "4",
-  "%": "5",
-  "^": "6",
-  "&": "7",
-  "*": "8",
-  "(": "9",
-  ")": "0",
-};
-const NAMED_KEYS = new Set([
-  "Enter",
-  "Tab",
-  "Backspace",
-  "Delete",
-  "Escape",
-  "ArrowUp",
-  "ArrowDown",
-  "ArrowLeft",
-  "ArrowRight",
-  "Home",
-  "End",
-  "PageUp",
-  "PageDown",
-]);
 const KEY_LABELS: Readonly<Record<string, string>> = {
   Space: "Space",
   Comma: ",",
@@ -120,46 +69,6 @@ export function detectShortcutPlatform(): ShortcutPlatform {
   return /Mac|iPhone|iPad|iPod/iu.test(platform) ? "apple" : "other";
 }
 
-/** Convert one keydown event into a canonical logical shortcut. */
-export function shortcutBindingFromEvent(
-  event: Pick<
-    KeyboardEvent,
-    | "key"
-    | "altKey"
-    | "ctrlKey"
-    | "metaKey"
-    | "shiftKey"
-    | "repeat"
-    | "isComposing"
-    | "defaultPrevented"
-  > &
-    Partial<Pick<KeyboardEvent, "code" | "getModifierState">>,
-  platform: ShortcutPlatform,
-): string | null {
-  if (event.defaultPrevented || event.repeat || event.isComposing) return null;
-  if (
-    event.getModifierState?.("AltGraph") === true ||
-    MODIFIER_KEYS.has(event.key)
-  ) {
-    return null;
-  }
-
-  const modifiers: string[] = [];
-  if (platform === "apple") {
-    if (event.metaKey) modifiers.push("Mod");
-    if (event.ctrlKey) modifiers.push("Ctrl");
-  } else {
-    if (event.ctrlKey) modifiers.push("Mod");
-    if (event.metaKey) modifiers.push("Meta");
-  }
-  if (event.altKey) modifiers.push("Alt");
-  if (event.shiftKey) modifiers.push("Shift");
-  if (!modifiers.some((modifier) => modifier !== "Shift")) return null;
-
-  const key = normalizeKey(event.key, event.code);
-  return key === null ? null : [...modifiers, key].join("+");
-}
-
 /** Split a canonical shortcut into platform-native keys for visual keycaps. */
 export function formatShortcutBindingParts(
   binding: string,
@@ -196,7 +105,8 @@ export function formatShortcutBinding(
 export function formatShortcutBindingAria(
   binding: string,
   platform: ShortcutPlatform,
-): string {
+): string | undefined {
+  if (binding.split("+").filter(part => !["Mod", "Ctrl", "Meta", "Alt", "Shift"].includes(part)).length > 1) return undefined;
   const parts = binding.split("+");
   const key = parts.pop() ?? "";
   return [
@@ -208,19 +118,4 @@ export function formatShortcutBindingAria(
     }),
     ARIA_KEY_LABELS[key] ?? key,
   ].join("+");
-}
-
-function normalizeKey(
-  key: string,
-  code?: string,
-): string | null {
-  const physicalDigit = /^Digit([0-9])$/u.exec(code ?? "");
-  if (physicalDigit?.[1] !== undefined) {
-    return physicalDigit[1];
-  }
-  if (/^[a-z]$/iu.test(key)) return key.toUpperCase();
-  if (/^[0-9]$/u.test(key)) return key;
-  if (/^F(?:[1-9]|1[0-9]|2[0-4])$/u.test(key)) return key;
-  if (NAMED_KEYS.has(key)) return key;
-  return PRINTABLE_KEYS[key] ?? null;
 }

@@ -1,15 +1,8 @@
 import {
-  isShortcutBinding,
-  type ShortcutBindings,
-} from "@minke/harness-overlay/shortcut-contract.ts";
-import {
-  detectShortcutPlatform,
-  shortcutBindingFromEvent,
-  type ShortcutPlatform,
-} from "./binding.ts";
-import type { ShortcutStore } from "../desktop/index.ts";
-
-export type ShortcutErrorKind = "unavailable" | "read" | "write";
+  SHARED_SHORTCUT_COMMANDS, legacyShortcutBinding, shortcutCommandId, shortcutHint,
+  type HarnessShortcuts,
+} from "../../shared-shortcuts-contract.ts";
+import type { ShortcutPlatform } from "./binding.ts";
 
 export type PaletteActionGroup =
   | "session"
@@ -59,357 +52,108 @@ export interface PaletteActionView {
   disabledReason: string | undefined;
 }
 
-export type ShortcutMutationResult =
-  | { ok: true }
-  | { ok: false; conflictActionId: string };
-
-interface KeyboardTarget {
-  addEventListener(
-    type: "keydown",
-    listener: (event: KeyboardEvent) => void,
-  ): void;
-  removeEventListener(
-    type: "keydown",
-    listener: (event: KeyboardEvent) => void,
-  ): void;
-}
-
-const ACTION_ID_PATTERN = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u;
-
-/**
- * Retains Minke's desktop bindings and product actions. DOM dispatch runs after
- * DSH's window-level keyboard owner, so native commands and modal arbitration
- * get first refusal instead of being intercepted during document bubbling.
- */
+/** Product actions and palette metadata; DSH owns dispatch, editing and persistence. */
 export class ShortcutRuntime {
-  readonly store: ShortcutStore;
-  readonly target: KeyboardTarget | undefined;
   readonly platform: ShortcutPlatform;
+  readonly #shortcuts: HarnessShortcuts;
   #actions = new Map<string, ShortcutAction>();
-  #overrides: ShortcutBindings = {};
-  #editable = false;
-  #error: ShortcutErrorKind | undefined;
-  #snapshot: ShortcutRuntimeSnapshot = Object.freeze({ revision: 0 });
+  #disposers = new Map<string, () => void>();
   #listeners = new Set<() => void>();
   #beforeInvokeListeners = new Set<(id: string) => void>();
-  #saveTail: Promise<void> = Promise.resolve();
-  #saveGeneration = 0;
-  #initializePromise: Promise<void> | undefined;
-  #disposed = false;
-  readonly #onKeyDown = (event: KeyboardEvent): void => {
-    this.#dispatch(event);
-  };
+  #snapshot: ShortcutRuntimeSnapshot = { revision: 0 };
+  readonly #unsubscribe: () => void;
 
-  constructor(
-    store: ShortcutStore,
-    target: KeyboardTarget | undefined =
-      typeof window === "undefined" ? undefined : window,
-    platform: ShortcutPlatform = detectShortcutPlatform(),
-  ) {
-    this.store = store;
-    this.target = target;
-    this.platform = platform;
-    target?.addEventListener("keydown", this.#onKeyDown);
+  constructor(shortcuts: HarnessShortcuts) {
+    this.#shortcuts = shortcuts;
+    this.platform = shortcuts.platform === "macos" ? "apple" : "other";
+    this.#unsubscribe = shortcuts.catalog.subscribe(() => this.#publish());
   }
 
-  get editable(): boolean {
-    return this.#editable;
-  }
-
-  get error(): ShortcutErrorKind | undefined {
-    return this.#error;
-  }
-
-  getSnapshot(): ShortcutRuntimeSnapshot {
-    return this.#snapshot;
-  }
-
+  getSnapshot(): ShortcutRuntimeSnapshot { return this.#snapshot; }
   subscribe(listener: () => void): () => void {
     this.#listeners.add(listener);
-    return () => {
-      this.#listeners.delete(listener);
-    };
+    return () => { this.#listeners.delete(listener); };
   }
-
   onBeforeInvoke(listener: (id: string) => void): () => void {
     this.#beforeInvokeListeners.add(listener);
-    return () => {
-      this.#beforeInvokeListeners.delete(listener);
-    };
+    return () => { this.#beforeInvokeListeners.delete(listener); };
   }
-
-  /** Hydrate durable overrides exactly once. */
-  initialize(): Promise<void> {
-    this.#initializePromise ??= this.#initialize();
-    return this.#initializePromise;
-  }
-
   register(action: ShortcutAction): () => void {
-    if (!ACTION_ID_PATTERN.test(action.id)) {
-      throw new Error(`invalid shortcut action id ${JSON.stringify(action.id)}`);
-    }
-    if (
-      action.defaultBinding !== null &&
-      !isShortcutBinding(action.defaultBinding)
-    ) {
-      throw new Error(
-        `invalid default shortcut ${JSON.stringify(action.defaultBinding)}`,
-      );
-    }
-    if (this.#actions.has(action.id)) {
-      throw new Error(`duplicate shortcut action ${JSON.stringify(action.id)}`);
+    if (this.#actions.has(action.id)) throw new Error(`Duplicate action: ${action.id}`);
+    let off = () => {};
+    if (action.shortcutConfigurable !== false && !Object.hasOwn(SHARED_SHORTCUT_COMMANDS, action.id)) {
+      // New installs inherit DSH's shared defaults; migration retains previous user bindings.
+      const value = action.id === "palette.open" ? "Mod+Shift+K"
+        : action.id === "tabs.bottom.toggle" ? "Mod+J" : action.defaultBinding;
+      const binding = legacyShortcutBinding(value);
+      // Keep browser defaults within DSH's supported Windows/macOS combinations.
+      // Simple product bindings remain desktop-only; DSH owns validation and editing.
+      const webDefaults = binding?.modifiers.some(modifier => modifier === "alt" || modifier === "shift")
+        ? { "web:macos": binding, "web:windows": binding } : {};
+      off = this.#shortcuts.register({
+        id: shortcutCommandId(action.id), label: action.label, aliases: [],
+        defaults: binding === null ? {} : {
+          "desktop:macos": binding, "desktop:windows": binding, "desktop:linux": binding,
+          ...webDefaults,
+        },
+        regions: ["page", "editable", "terminal"], modals: [],
+        resolve: () => {
+          const reason = action.palette?.disabledReason?.();
+          return reason === undefined ? { status: "handled", run: () => { this.invoke(action.id); } }
+            : { status: "blocked", reason };
+        },
+      });
     }
     this.#actions.set(action.id, action);
+    this.#disposers.set(action.id, off);
     this.#publish();
     return () => {
-      if (this.#actions.delete(action.id)) this.#publish();
+      if (!this.#actions.delete(action.id)) return;
+      this.#disposers.delete(action.id);
+      off();
+      this.#publish();
     };
   }
-
-  /** Run one registered action through the same path used by key events. */
   invoke(id: string): boolean {
     const action = this.#actions.get(id);
-    if (
-      action === undefined ||
-      action.palette?.disabledReason?.() !== undefined
-    ) {
-      return false;
-    }
-    for (const listener of [...this.#beforeInvokeListeners]) listener(id);
+    if (action === undefined || action.palette?.disabledReason?.() !== undefined) return false;
+    for (const listener of this.#beforeInvokeListeners) listener(id);
     action.run();
     return true;
   }
-
   listActions(): readonly ShortcutActionView[] {
-    const actions = [...this.#actions.values()].filter(
-      (action) => action.shortcutConfigurable !== false,
-    );
-    return actions
-      .map((action): ShortcutActionView => {
-        const binding = this.#effectiveBinding(action);
-        const conflicts =
-          binding === null
-            ? []
-            : actions
-                .filter(
-                  (candidate) =>
-                    candidate.id !== action.id &&
-                    this.#effectiveBinding(candidate) === binding,
-                )
-                .map((candidate) => candidate.id);
-        return Object.freeze({
-          id: action.id,
-          label: action.label(),
-          defaultBinding: action.defaultBinding,
-          binding,
-          overridden: Object.hasOwn(this.#overrides, action.id),
-          editable: this.#editable,
-          order: action.order ?? 0,
-          conflicts: Object.freeze(conflicts),
-        });
-      })
-      .sort(
-        (left, right) =>
-          left.order - right.order || left.label.localeCompare(right.label),
-      );
+    const rows = new Map(this.#shortcuts.catalog.getSnapshot().map(row => [row.id as string, row]));
+    return [...this.#actions.values()].filter(action => action.shortcutConfigurable !== false).map(action => {
+      const row = rows.get(shortcutCommandId(action.id));
+      return {
+        id: action.id, label: action.label(), defaultBinding: action.defaultBinding,
+        binding: row === undefined || row.issue !== null ? null : shortcutHint(row.binding, this.platform === "apple"),
+        overridden: row?.modified ?? false, editable: false, order: action.order ?? 0,
+        conflicts: row?.conflicts ?? [],
+      };
+    });
   }
-
   listPaletteActions(): readonly PaletteActionView[] {
-    return [...this.#actions.values()]
-      .flatMap((action): PaletteActionView[] => {
-        const metadata = action.palette;
-        if (metadata === undefined) return [];
-        return [{
-          id: action.id,
-          label: action.label(),
-          group: metadata.group,
-          keywords: Object.freeze([...(metadata.keywords?.() ?? [])]),
-          binding: this.#effectiveBinding(action),
-          order: metadata.order ?? action.order ?? 0,
-          disabledReason: metadata.disabledReason?.(),
-        }];
-      })
-      .sort(
-        (left, right) =>
-          left.order - right.order || left.label.localeCompare(right.label),
-      );
+    const bindings = new Map(this.listActions().map(row => [row.id, row.conflicts.length ? null : row.binding]));
+    return [...this.#actions.values()].flatMap(action => {
+      const metadata = action.palette;
+      return metadata === undefined ? [] : [{
+        id: action.id, label: action.label(), group: metadata.group,
+        keywords: metadata.keywords?.() ?? [], binding: bindings.get(action.id) ?? null,
+        order: metadata.order ?? action.order ?? 0, disabledReason: metadata.disabledReason?.(),
+      }];
+    }).sort((left, right) => left.order - right.order || left.label.localeCompare(right.label));
   }
-
-  setBinding(
-    id: string,
-    binding: string | null,
-  ): ShortcutMutationResult {
-    this.#assertEditable();
-    const action = this.#requireAction(id);
-    this.#assertShortcutConfigurable(action);
-    if (binding !== null && !isShortcutBinding(binding)) {
-      throw new Error(`invalid shortcut binding ${JSON.stringify(binding)}`);
-    }
-    const conflict =
-      binding === null
-        ? undefined
-        : [...this.#actions.values()].find(
-            (candidate) =>
-              candidate.id !== id &&
-              this.#effectiveBinding(candidate) === binding,
-          );
-    if (conflict !== undefined) {
-      return { ok: false, conflictActionId: conflict.id };
-    }
-
-    const next = { ...this.#overrides };
-    if (binding === action.defaultBinding) {
-      Reflect.deleteProperty(next, id);
-    } else {
-      next[id] = binding ?? "";
-    }
-    this.#commit(next);
-    return { ok: true };
-  }
-
-  resetBinding(id: string): ShortcutMutationResult {
-    this.#assertEditable();
-    const action = this.#requireAction(id);
-    this.#assertShortcutConfigurable(action);
-    const conflict =
-      action.defaultBinding === null
-        ? undefined
-        : [...this.#actions.values()].find(
-            (candidate) =>
-              candidate.id !== id &&
-              this.#effectiveBinding(candidate) === action.defaultBinding,
-          );
-    if (conflict !== undefined) {
-      return { ok: false, conflictActionId: conflict.id };
-    }
-    if (!Object.hasOwn(this.#overrides, id)) return { ok: true };
-    const next = { ...this.#overrides };
-    Reflect.deleteProperty(next, id);
-    this.#commit(next);
-    return { ok: true };
-  }
-
-  /** Await queued persistence, primarily for deterministic shutdown/tests. */
-  async flush(): Promise<void> {
-    await this.#saveTail;
-  }
-
   dispose(): void {
-    if (this.#disposed) return;
-    this.#disposed = true;
-    this.target?.removeEventListener("keydown", this.#onKeyDown);
+    this.#unsubscribe();
+    for (const off of this.#disposers.values()) off();
+    this.#disposers.clear();
+    this.#actions.clear();
     this.#listeners.clear();
     this.#beforeInvokeListeners.clear();
-    this.#actions.clear();
   }
-
-  async #initialize(): Promise<void> {
-    if (!this.store.available) {
-      this.#error = "unavailable";
-      this.#publish();
-      return;
-    }
-    try {
-      const bindings = await this.store.read();
-      if (this.#disposed) return;
-      this.#overrides = { ...bindings };
-      this.#editable = true;
-      this.#error = undefined;
-      this.#publish();
-    } catch {
-      if (this.#disposed) return;
-      this.#editable = false;
-      this.#error = "read";
-      this.#publish();
-    }
-  }
-
-  #assertEditable(): void {
-    if (!this.#editable) {
-      throw new Error("shortcut settings are not editable");
-    }
-  }
-
-  #requireAction(id: string): ShortcutAction {
-    const action = this.#actions.get(id);
-    if (action === undefined) {
-      throw new Error(`unknown shortcut action ${JSON.stringify(id)}`);
-    }
-    return action;
-  }
-
-  #assertShortcutConfigurable(action: ShortcutAction): void {
-    if (action.shortcutConfigurable === false) {
-      throw new Error(`action ${JSON.stringify(action.id)} is not configurable`);
-    }
-  }
-
-  #effectiveBinding(action: ShortcutAction): string | null {
-    if (action.shortcutConfigurable === false) {
-      return action.defaultBinding;
-    }
-    const override = this.#overrides[action.id];
-    if (override === "") return null;
-    if (override !== undefined && isShortcutBinding(override)) return override;
-    return action.defaultBinding;
-  }
-
-  #commit(next: ShortcutBindings): void {
-    if (shallowRecordEqual(next, this.#overrides)) return;
-    this.#overrides = next;
-    this.#error = undefined;
-    this.#publish();
-
-    const generation = ++this.#saveGeneration;
-    const payload = { ...next };
-    const operation = this.#saveTail.then(async () => {
-      await this.store.write(payload);
-    });
-    this.#saveTail = operation.then(
-      () => {
-        if (this.#disposed || generation !== this.#saveGeneration) return;
-        if (this.#error === "write") {
-          this.#error = undefined;
-          this.#publish();
-        }
-      },
-      () => {
-        if (this.#disposed || generation !== this.#saveGeneration) return;
-        this.#error = "write";
-        this.#publish();
-      },
-    );
-  }
-
-  #dispatch(event: KeyboardEvent): void {
-    const binding = shortcutBindingFromEvent(event, this.platform);
-    if (binding === null) return;
-    const matches = [...this.#actions.values()].filter(
-      (action) => this.#effectiveBinding(action) === binding,
-    );
-    const match = matches[0];
-    if (matches.length !== 1 || match === undefined) return;
-    event.preventDefault();
-    this.invoke(match.id);
-  }
-
   #publish(): void {
-    if (this.#disposed) return;
-    this.#snapshot = Object.freeze({
-      revision: this.#snapshot.revision + 1,
-    });
-    for (const listener of [...this.#listeners]) listener();
+    this.#snapshot = { revision: this.#snapshot.revision + 1 };
+    for (const listener of this.#listeners) listener();
   }
-}
-
-function shallowRecordEqual(
-  left: ShortcutBindings,
-  right: ShortcutBindings,
-): boolean {
-  const leftKeys = Object.keys(left);
-  const rightKeys = Object.keys(right);
-  return (
-    leftKeys.length === rightKeys.length &&
-    leftKeys.every((key) => left[key] === right[key])
-  );
 }

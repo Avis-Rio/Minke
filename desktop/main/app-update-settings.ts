@@ -1,10 +1,7 @@
 import {
-  APP_UPDATE_CHECK_CHANNEL,
   APP_UPDATE_SETTINGS_READ_CHANNEL,
   APP_UPDATE_SETTINGS_WRITE_CHANNEL,
-  parseAppUpdateCheckResult,
   parseAppUpdateSettings,
-  type AppUpdateCheckResult,
   type AppUpdateSettings,
 } from "@minke/harness-overlay/app-update-contract.ts";
 
@@ -30,7 +27,6 @@ export function bindAppUpdateSettingsIpc(
   ipcMain: IpcMainLike,
   store: AppUpdateSettingsStore,
   apply: (settings: AppUpdateSettings) => void,
-  check: () => Promise<AppUpdateCheckResult>,
   authorize: (event: unknown) => boolean,
 ): AppUpdateSettingsBinding {
   const read = async (
@@ -48,13 +44,6 @@ export function bindAppUpdateSettingsIpc(
     apply(settings);
     await store.write(settings);
   };
-  const checkNow = async (
-    event: unknown,
-  ): Promise<AppUpdateCheckResult> => {
-    assertAuthorized(authorize, event);
-    return parseAppUpdateCheckResult(await check());
-  };
-  ipcMain.handle(APP_UPDATE_CHECK_CHANNEL, checkNow);
   ipcMain.handle(APP_UPDATE_SETTINGS_READ_CHANNEL, read);
   ipcMain.handle(APP_UPDATE_SETTINGS_WRITE_CHANNEL, write);
 
@@ -63,7 +52,6 @@ export function bindAppUpdateSettingsIpc(
     dispose() {
       if (disposed) return;
       disposed = true;
-      ipcMain.removeHandler(APP_UPDATE_CHECK_CHANNEL);
       ipcMain.removeHandler(APP_UPDATE_SETTINGS_READ_CHANNEL);
       ipcMain.removeHandler(APP_UPDATE_SETTINGS_WRITE_CHANNEL);
     },

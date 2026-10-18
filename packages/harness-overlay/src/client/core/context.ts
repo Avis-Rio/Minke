@@ -1,3 +1,4 @@
+import type { HarnessShortcuts } from "../../shared-shortcuts-contract.ts";
 import type { ComponentType } from "react";
 import type { HarnessSessionList } from "./sessions.ts";
 
@@ -139,6 +140,7 @@ export interface HarnessClientContext {
     callback: () => void | (() => void),
     label: string,
   ): unknown;
+  shortcuts: HarnessShortcuts;
   locale: LocaleService;
   layout: {
     selectPanel(panelId: string | null): void;

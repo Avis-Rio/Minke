@@ -1,7 +1,7 @@
 import {
-  isWindowThemeMessage,
+  isWindowThemeSource,
   WINDOW_THEME_CHANNEL,
-  type WindowColorScheme,
+  type WindowThemeSource,
 } from "@minke/desktop/window-theme-contract.ts";
 
 /** Lifecycle handle for a window-scoped native theme listener. */
@@ -19,7 +19,7 @@ type WindowThemeHost = Readonly<{
 }>;
 
 type NativeThemeHost = {
-  themeSource: "system" | WindowColorScheme;
+  themeSource: WindowThemeSource;
 };
 
 type WindowThemeListener = (event: unknown, message: unknown) => void;
@@ -31,15 +31,12 @@ type WindowThemeListener = (event: unknown, message: unknown) => void;
 export function bindWindowTheme(
   window: WindowThemeHost,
   nativeTheme: NativeThemeHost,
+  authorize: (event: unknown) => boolean,
 ): WindowThemeBinding {
   let disposed = false;
   const ipc = window.webContents.ipc;
-  const listener: WindowThemeListener = (_event, message) => {
-    if (!isWindowThemeMessage(message)) return;
-    const source =
-      "preference" in message
-        ? message.preference
-        : message.colorScheme;
+  const listener: WindowThemeListener = (event, source) => {
+    if (!authorize(event) || !isWindowThemeSource(source)) return;
     if (nativeTheme.themeSource !== source) {
       nativeTheme.themeSource = source;
     }

@@ -1,10 +1,10 @@
+import type { DesktopUpdateBridge } from "../../shared-updates-contract.ts";
 import type { ComponentType } from "react";
 import type {
   HarnessClientContext,
 } from "../core/context.ts";
 import {
   desktopAboutInfo,
-  desktopAppUpdatePort,
   desktopTabsPort,
 } from "../desktop/index.ts";
 import {
@@ -24,7 +24,10 @@ export function installAbout(ctx: HarnessClientContext): void {
   if (!aboutInfo.available) return;
 
   const tabsPort = desktopTabsPort();
-  const appUpdatePort = desktopAppUpdatePort();
+  const carrier = (globalThis as typeof globalThis & {
+    dshDesktop?: { protocolVersion: number; updates?: DesktopUpdateBridge };
+  }).dshDesktop;
+  const updates = carrier?.protocolVersion === 1 ? carrier.updates : undefined;
   ctx.effect(
     () =>
       ctx.locale.register(ABOUT_NAMESPACE, {
@@ -49,8 +52,9 @@ export function installAbout(ctx: HarnessClientContext): void {
         label: () => aboutT("trigger"),
         locale: ABOUT_NAMESPACE,
         inject: () => ({
-          checkForUpdates: async () =>
-            await appUpdatePort.check(),
+          openUpdates: updates === undefined ? undefined : () => {
+            void updates.open().catch((error: unknown) => { console.warn("Desktop update action failed", error); });
+          },
           info: aboutInfo,
           openExternal: (url: string) => {
             tabsPort.openExternal(url);

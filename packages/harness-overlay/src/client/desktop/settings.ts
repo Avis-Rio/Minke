@@ -18,7 +18,6 @@ import {
 } from "@minke/harness-overlay/terminal-settings-contract.ts";
 import {
   DEFAULT_APP_UPDATE_SETTINGS,
-  parseAppUpdateCheckResult,
   parseAppUpdateSettings,
 } from "@minke/harness-overlay/app-update-contract.ts";
 import {
@@ -30,7 +29,6 @@ import {
   parseWebSearchSettings,
 } from "@minke/harness-overlay/web-search-settings-contract.ts";
 import type {
-  AppUpdatePort,
   AppUpdateSettingsStore,
   BrowserSettingsStore,
   DataHomeSettingsPort,
@@ -54,18 +52,15 @@ import {
   parseRemoteHubSnapshot,
 } from "@minke/harness-overlay/remote-hub-contract.ts";
 
-/** Adapt the isolated preload bridge for update checks and preferences. */
-export function desktopAppUpdatePort(
+/** Adapt the product-owned automatic download preference. */
+export function desktopAppUpdateSettingsStore(
   source: DesktopBridgeWindow =
     window as unknown as DesktopBridgeWindow,
-): AppUpdatePort {
+): AppUpdateSettingsStore {
   const bridge = source.minkeDesktop?.appUpdate;
   if (bridge === undefined) {
     return {
       available: false,
-      async check() {
-        return "unavailable";
-      },
       async read() {
         return { ...DEFAULT_APP_UPDATE_SETTINGS };
       },
@@ -78,12 +73,6 @@ export function desktopAppUpdatePort(
   }
   return {
     available: true,
-    async check() {
-      if (typeof bridge.check !== "function") {
-        return "unavailable";
-      }
-      return parseAppUpdateCheckResult(await bridge.check());
-    },
     async read() {
       return parseAppUpdateSettings(await bridge.read());
     },
@@ -91,14 +80,6 @@ export function desktopAppUpdatePort(
       await bridge.write(parseAppUpdateSettings(settings));
     },
   };
-}
-
-/** Adapt only the update preference surface used by Settings. */
-export function desktopAppUpdateSettingsStore(
-  source: DesktopBridgeWindow =
-    window as unknown as DesktopBridgeWindow,
-): AppUpdateSettingsStore {
-  return desktopAppUpdatePort(source);
 }
 
 /** Adapt the isolated preload bridge for web-search preferences. */
@@ -175,7 +156,7 @@ export function shouldExposeDesktopDataHomeSettings(
   return source.minkeDesktop !== undefined;
 }
 
-/** Adapt the isolated preload bridge for DSH data-directory migration. */
+/** Use DSH's directory picker with the product-owned migration workflow. */
 export function desktopDataHomeSettingsPort(
   source: DesktopBridgeWindow =
     window as unknown as DesktopBridgeWindow,
@@ -212,8 +193,12 @@ export function desktopDataHomeSettingsPort(
       return parseDataHomeSettingsSnapshot(await bridge.read());
     },
     async chooseDirectory() {
-      const selected = await bridge.chooseDirectory();
-      return selected === undefined
+      const picker = source.__DSH_DIRECTORY_PICKER__;
+      if (picker === undefined) {
+        throw new Error("DSH desktop directory picker is unavailable");
+      }
+      const selected = await picker.pick();
+      return selected === null
         ? undefined
         : parseDataHomePath(selected);
     },

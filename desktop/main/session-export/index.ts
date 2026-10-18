@@ -1,7 +1,7 @@
 export {
   bindSessionLogExport,
-} from "./ipc.ts";
+} from "./downloads.ts";
 export type {
   SessionLogExportBinding,
   SessionLogExportOptions,
-} from "./ipc.ts";
+} from "./downloads.ts";

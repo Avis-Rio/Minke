@@ -277,7 +277,7 @@ test("tab creation shortcuts are native commands grouped by placement", () => {
       [
         "File Manager",
         "Terminal",
-        "Browser",
+        "Persistent Browser",
         "Browser History",
         "Plugins",
       ],
@@ -287,7 +287,7 @@ test("tab creation shortcuts are native commands grouped by placement", () => {
       [
         "File Manager",
         "Terminal",
-        "Browser",
+        "Persistent Browser",
         "Browser History",
         "Plugins",
       ],
@@ -401,7 +401,7 @@ test("persisted and localized changes rebuild menu accelerators", () => {
     submenuItems(host, "tabs.right.create.submenu").map(
       (item) => item.label,
     ),
-    ["文件管理器", "终端", "浏览器", "浏览历史", "插件"],
+    ["文件管理器", "终端", "常驻浏览器", "浏览历史", "插件"],
   );
 
   binding.refreshBaseMenu();

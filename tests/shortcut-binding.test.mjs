@@ -4,71 +4,12 @@ import {
   formatShortcutBinding,
   formatShortcutBindingAria,
   formatShortcutBindingParts,
-  shortcutBindingFromEvent,
 } from "@minke/harness-overlay/client/shortcuts/binding.ts";
 import {
   TAB_CREATE_SHORTCUT_DESCRIPTORS,
 } from "@minke/harness-overlay/shortcut-contract.ts";
 
-function keyEvent(overrides = {}) {
-  return {
-    key: "n",
-    altKey: false,
-    ctrlKey: false,
-    metaKey: false,
-    shiftKey: false,
-    repeat: false,
-    isComposing: false,
-    defaultPrevented: false,
-    getModifierState: () => false,
-    ...overrides,
-  };
-}
-
-test("logical Mod follows the current platform", () => {
-  assert.equal(
-    shortcutBindingFromEvent(
-      keyEvent({ metaKey: true }),
-      "apple",
-    ),
-    "Mod+N",
-  );
-  assert.equal(
-    shortcutBindingFromEvent(
-      keyEvent({ ctrlKey: true }),
-      "other",
-    ),
-    "Mod+N",
-  );
-  assert.equal(
-    shortcutBindingFromEvent(
-      keyEvent({ shiftKey: true }),
-      "apple",
-    ),
-    null,
-  );
-  assert.equal(
-    shortcutBindingFromEvent(
-      keyEvent({
-        code: "Digit1",
-        key: "&",
-        metaKey: true,
-      }),
-      "apple",
-    ),
-    "Mod+1",
-    "number shortcuts must survive AZERTY key labels",
-  );
-});
-
-test("punctuation bindings normalize and render natively", () => {
-  assert.equal(
-    shortcutBindingFromEvent(
-      keyEvent({ key: ",", metaKey: true }),
-      "apple",
-    ),
-    "Mod+Comma",
-  );
+test("accepted bindings render natively and chords omit invalid ARIA shortcuts", () => {
   assert.equal(formatShortcutBinding("Mod+Comma", "apple"), "⌘,");
   assert.equal(formatShortcutBinding("Mod+Shift+N", "other"), "Ctrl + Shift + N");
   assert.deepEqual(
@@ -95,6 +36,8 @@ test("punctuation bindings normalize and render natively", () => {
     formatShortcutBindingAria("Ctrl+Backquote", "apple"),
     "Control+`",
   );
+  assert.equal(formatShortcutBinding("Mod+J+K", "apple"), "⌘JK");
+  assert.equal(formatShortcutBindingAria("Mod+J+K", "apple"), undefined);
 });
 
 test("bottom tab defaults pair with right-panel shortcuts without OS capture keys", () => {

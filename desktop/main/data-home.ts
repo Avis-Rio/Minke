@@ -41,9 +41,6 @@ export interface DataHomeManagerOptions {
   configuration: MinkeConfigSection<string | undefined>;
   homeDirectory?: string;
   environment?: NodeJS.ProcessEnv;
-  chooseDirectory?: (
-    defaultPath: string,
-  ) => Promise<string | undefined>;
   restart?: () => void;
 }
 
@@ -171,9 +168,6 @@ export class DataHomeManager {
   readonly #configuration: MinkeConfigSection<string | undefined>;
   readonly #homeDirectory: string;
   readonly #environment: NodeJS.ProcessEnv;
-  readonly #chooseDirectory: (
-    defaultPath: string,
-  ) => Promise<string | undefined>;
   readonly #restart: () => void;
   readonly #journal: DataHomeMigrationJournal;
 
@@ -184,8 +178,6 @@ export class DataHomeManager {
       options.homeDirectory ?? homedir(),
     );
     this.#environment = { ...(options.environment ?? process.env) };
-    this.#chooseDirectory =
-      options.chooseDirectory ?? (async () => undefined);
     this.#restart = options.restart ?? (() => {});
     this.#journal = new DataHomeMigrationJournal(
       this.#userDataPath,
@@ -216,15 +208,6 @@ export class DataHomeManager {
         ? {}
         : { lastMigration }),
     };
-  }
-
-  async chooseDirectory(): Promise<string | undefined> {
-    const selected = await this.#chooseDirectory(
-      await this.activePath(),
-    );
-    return selected === undefined
-      ? undefined
-      : this.#targetPath(selected);
   }
 
   async plan(

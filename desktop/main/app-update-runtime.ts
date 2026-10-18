@@ -1,4 +1,6 @@
 import {
+  app,
+  powerMonitor,
   dialog,
   session,
   shell,
@@ -13,15 +15,14 @@ import {
   mkdir,
   mkdtemp,
   rm,
+  rename,
 } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type DesktopMessageKey,
   type DesktopTranslateParams,
 } from "@minke/desktop/i18n";
-import type {
-  AppUpdateCheckResult,
-} from "@minke/harness-overlay/app-update-contract";
+import type { DesktopUpdatePresentation } from "@minke/harness-overlay/shared-updates-contract.ts";
 import {
   assertTrustedDownloadUrlChain,
   fetchAppUpdate,
@@ -45,6 +46,7 @@ export interface AppUpdateRuntimeOptions {
   currentVersion: string;
   userDataPath: string;
   window(): BrowserWindow | undefined;
+  changed?(state: DesktopUpdatePresentation): void;
   text(
     key: DesktopMessageKey,
     params?: DesktopTranslateParams,
@@ -84,8 +86,16 @@ function readyDetailKey(
 export class AppUpdateRuntime {
   readonly #options: AppUpdateRuntimeOptions;
   readonly #downloadSession: Session;
-  #initialTimer: NodeJS.Timeout | undefined;
-  #interval: NodeJS.Timeout | undefined;
+  #timer: NodeJS.Timeout | undefined;
+  #started = false;
+  #nextCheck = 0;
+  #failures = 0;
+  #checkPromise: Promise<void> | undefined;
+  #presentation: DesktopUpdatePresentation = Object.freeze({ phase: "idle" });
+  #manualCheckRequested = false;
+  readonly #wake = (): void => {
+    if (!this.#disposed && this.#started && Date.now() >= this.#nextCheck) this.#runAutomaticCheck();
+  };
   #activeDownload: DownloadItem | undefined;
   #pendingDownload:
     | ((
@@ -96,7 +106,6 @@ export class AppUpdateRuntime {
   #offeredVersion: string | undefined;
   #checkAbort: AbortController | undefined;
   #autoDownload: boolean;
-  #checking = false;
   #offering = false;
   #disposed = false;
 
@@ -114,43 +123,51 @@ export class AppUpdateRuntime {
   }
 
   start(): void {
-    if (
-      this.#disposed ||
-      this.#initialTimer !== undefined ||
-      this.#interval !== undefined
-    ) {
-      return;
-    }
-    this.#initialTimer = setTimeout(() => {
-      this.#initialTimer = undefined;
-      this.#runAutomaticCheck();
-    }, INITIAL_CHECK_DELAY_MS);
-    this.#initialTimer.unref();
-    this.#interval = setInterval(() => {
-      this.#runAutomaticCheck();
-    }, CHECK_INTERVAL_MS);
-    this.#interval.unref();
+    if (this.#disposed || this.#started) return;
+    this.#started = true;
+    app.on("browser-window-focus", this.#wake);
+    powerMonitor.on("resume", this.#wake);
+    this.#schedule(INITIAL_CHECK_DELAY_MS);
+  }
+
+  #schedule(delay: number): void {
+    if (this.#disposed || !this.#started) return;
+    clearTimeout(this.#timer);
+    this.#nextCheck = Date.now() + delay;
+    this.#timer = setTimeout(() => this.#runAutomaticCheck(), delay);
+    this.#timer.unref();
+  }
+
+  #scheduleAfterCheck(failed: boolean): void {
+    this.#failures = failed ? this.#failures + 1 : 0;
+    const delay = failed ? Math.min(6 * 60 * 60 * 1_000, 5 * 60 * 1_000 * 2 ** Math.min(this.#failures - 1, 10))
+      : CHECK_INTERVAL_MS;
+    this.#schedule(Math.round(delay * (0.9 + Math.random() * 0.2)));
   }
 
   setAutoDownload(autoDownload: boolean): void {
     this.#autoDownload = autoDownload;
   }
 
-  async checkNow(): Promise<AppUpdateCheckResult> {
-    return await this.#checkForUpdates(true);
+  status(): DesktopUpdatePresentation { return this.#presentation; }
+
+  async open(): Promise<void> {
+    await this.#checkForUpdates(true);
+  }
+
+  #publish(state: DesktopUpdatePresentation): void {
+    if (this.#disposed || JSON.stringify(state) === JSON.stringify(this.#presentation)) return;
+    this.#presentation = Object.freeze(state);
+    this.#options.changed?.(this.#presentation);
   }
 
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    if (this.#initialTimer !== undefined) {
-      clearTimeout(this.#initialTimer);
-      this.#initialTimer = undefined;
-    }
-    if (this.#interval !== undefined) {
-      clearInterval(this.#interval);
-      this.#interval = undefined;
-    }
+    clearTimeout(this.#timer);
+    this.#timer = undefined;
+    app.off("browser-window-focus", this.#wake);
+    powerMonitor.off("resume", this.#wake);
     if (
       this.#activeDownload !== undefined &&
       this.#activeDownload.getState() === "progressing"
@@ -176,12 +193,32 @@ export class AppUpdateRuntime {
     });
   }
 
-  async #checkForUpdates(
-    manual: boolean,
-  ): Promise<AppUpdateCheckResult> {
-    if (this.#disposed) return "unavailable";
-    if (this.#checking || this.#offering) return "busy";
-    this.#checking = true;
+  #checkForUpdates(manual: boolean): Promise<void> {
+    if (this.#disposed) return Promise.resolve();
+    if (this.#offering) {
+      this.#schedule(CHECK_INTERVAL_MS);
+      return Promise.resolve();
+    }
+    this.#manualCheckRequested ||= manual;
+    if (this.#checkPromise !== undefined) return this.#checkPromise;
+    clearTimeout(this.#timer);
+    const operation = this.#performCheck().then(result => {
+      this.#scheduleAfterCheck(false);
+      return result;
+    }, (error: unknown) => {
+      this.#publish({ phase: "error", failure: "check" });
+      this.#scheduleAfterCheck(true);
+      throw error;
+    }).finally(() => {
+      this.#checkPromise = undefined;
+      this.#manualCheckRequested = false;
+    });
+    this.#checkPromise = operation;
+    return operation;
+  }
+
+  async #performCheck(): Promise<void> {
+    this.#publish({ phase: "checking" });
     const controller = new AbortController();
     this.#checkAbort = controller;
     const timeout = setTimeout(() => {
@@ -205,18 +242,26 @@ export class AppUpdateRuntime {
       if (this.#checkAbort === controller) {
         this.#checkAbort = undefined;
       }
-      this.#checking = false;
     }
-    if (this.#disposed) return "unavailable";
-    if (update === undefined) return "up-to-date";
+    if (this.#disposed) return;
+    if (update === undefined) {
+      this.#publish({ phase: "idle" });
+      if (this.#manualCheckRequested) await this.#showMessageBox({
+        type: "info", title: this.#options.text("update.availableTitle"),
+        message: this.#options.text("update.upToDate"),
+      });
+      return;
+    }
     if (
-      !manual &&
+      !this.#manualCheckRequested &&
       this.#offeredVersion === update.version
     ) {
-      return "update-available";
+      this.#publish({ phase: "available", version: update.version });
+      return;
     }
 
     this.#offeredVersion = update.version;
+    this.#publish({ phase: "available", version: update.version });
     this.#offering = true;
     void this.#offerUpdate(update)
       .catch((error: unknown) => {
@@ -227,71 +272,81 @@ export class AppUpdateRuntime {
       .finally(() => {
         this.#offering = false;
       });
-    return "update-available";
   }
 
   async #offerUpdate(update: AppUpdate): Promise<void> {
-    if (shouldConfirmUpdateDownload(this.#autoDownload)) {
-      const choice = await this.#showMessageBox({
-        type: "info",
-        title: this.#options.text("update.availableTitle"),
-        message: this.#options.text("update.availableMessage", {
-          version: update.version,
-        }),
-        detail: this.#options.text("update.availableDetail", {
-          current: this.#options.currentVersion,
-        }),
-        buttons: [
-          this.#options.text("update.download"),
-          this.#options.text("update.later"),
-        ],
-        defaultId: 0,
-        cancelId: 1,
-        noLink: true,
-      });
-      if (choice.response !== 0 || this.#disposed) return;
+    let confirmed = !shouldConfirmUpdateDownload(this.#autoDownload);
+    while (!this.#disposed) {
+      let operation: "download" | "install" = "download";
+      try {
+        this.#publish({ phase: "available", version: update.version });
+        let download = await this.#cachedDownload(update);
+        if (download === undefined) {
+          if (!confirmed) {
+            const choice = await this.#showMessageBox({
+              type: "info", title: this.#options.text("update.availableTitle"),
+              message: this.#options.text("update.availableMessage", { version: update.version }),
+              detail: this.#options.text("update.availableDetail", { current: this.#options.currentVersion }),
+              buttons: [this.#options.text("update.download"), this.#options.text("update.later")],
+              defaultId: 0, cancelId: 1, noLink: true,
+            });
+            if (choice.response !== 0 || this.#disposed) return;
+            confirmed = true;
+          }
+          download = await this.#downloadAndVerify(update);
+        }
+        if (this.#disposed) return;
+        // DSH ready means "Install and Restart". Minke opens an OS installer,
+        // so a verified package remains available until the user installs it.
+        this.#publish({ phase: "available", version: update.version });
+        const ready = await this.#showMessageBox({
+          type: "info", title: this.#options.text("update.readyTitle"),
+          message: this.#options.text("update.readyMessage", { version: update.version }),
+          detail: this.#options.text(readyDetailKey(update)),
+          buttons: [this.#options.text(update.target.installer === "appimage" ? "update.showAppImage" : "update.openInstaller"),
+            this.#options.text("update.later")], defaultId: 0, cancelId: 1, noLink: true,
+        });
+        // A prepared package stays available after Later, including after application restart.
+        if (ready.response !== 0 || this.#disposed) return;
+        operation = "install";
+        this.#publish({ phase: "verifying", version: update.version });
+        await this.#openVerifiedUpdate(update, download.path);
+        this.#publish({ phase: "available", version: update.version });
+        return;
+      } catch (error) {
+        this.#publish({ phase: "error", failure: operation, version: update.version });
+        this.#offeredVersion = undefined;
+        if (this.#disposed || !await this.#offerBrowserFallback(update, error)) return;
+        confirmed = true;
+      }
     }
+  }
 
-    let download: VerifiedUpdateDownload | undefined;
+  #cachePath(update: AppUpdate): VerifiedUpdateDownload {
+    const directory = join(this.#options.userDataPath, "updates", `ready-${update.asset.sha256}`);
+    return { directory, path: join(directory, update.asset.name) };
+  }
+
+  async #cachedDownload(update: AppUpdate): Promise<VerifiedUpdateDownload | undefined> {
+    const cached = this.#cachePath(update);
     try {
-      download = await this.#downloadAndVerify(update);
-      if (this.#disposed) {
-        await this.#discardDownload(download);
-        return;
-      }
-      const appImage =
-        update.target.installer === "appimage";
-      const ready = await this.#showMessageBox({
-        type: "info",
-        title: this.#options.text("update.readyTitle"),
-        message: this.#options.text("update.readyMessage", {
-          version: update.version,
-        }),
-        detail: this.#options.text(readyDetailKey(update)),
-        buttons: [
-          this.#options.text(
-            appImage
-              ? "update.showAppImage"
-              : "update.openInstaller",
-          ),
-          this.#options.text("update.later"),
-        ],
-        defaultId: 0,
-        cancelId: 1,
-        noLink: true,
-      });
-      if (ready.response !== 0 || this.#disposed) {
-        await this.#discardDownload(download);
-        return;
-      }
-      await this.#openVerifiedUpdate(update, download.path);
+      const root = await lstat(join(this.#options.userDataPath, "updates"));
+      if (!root.isDirectory() || root.isSymbolicLink()) throw new Error("application update cache is not a private directory");
     } catch (error) {
-      if (download !== undefined) {
-        await this.#discardDownload(download);
-      }
-      if (!this.#disposed) {
-        await this.#offerBrowserFallback(update, error);
-      }
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+    try {
+      const directory = await lstat(cached.directory);
+      if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error("invalid cached update directory");
+      // The expected digest comes from the checked immutable release, never from a cache manifest.
+      await verifyDownloadedUpdate(cached.path, update.asset);
+      await this.#assertPlatformProvenance(update, cached.path);
+      return cached;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.warn("Discarding invalid cached update", error);
+      await this.#discardDownload(cached);
+      return undefined;
     }
   }
 
@@ -328,6 +383,7 @@ export class AppUpdateRuntime {
   async #downloadAndVerify(
     update: AppUpdate,
   ): Promise<VerifiedUpdateDownload> {
+    this.#publish({ phase: "downloading", version: update.version, percent: 0 });
     const updatesRoot = join(
       this.#options.userDataPath,
       "updates",
@@ -356,15 +412,15 @@ export class AppUpdateRuntime {
     );
     try {
       await this.#download(update, destination);
+      this.#publish({ phase: "verifying", version: update.version });
       await verifyDownloadedUpdate(destination, update.asset);
       await this.#assertPlatformProvenance(
         update,
         destination,
       );
-      return {
-        directory: downloadRoot,
-        path: destination,
-      };
+      const cached = this.#cachePath(update);
+      await rename(downloadRoot, cached.directory);
+      return cached;
     } catch (error) {
       await rm(downloadRoot, {
         recursive: true,
@@ -462,6 +518,8 @@ export class AppUpdateRuntime {
             this.#setProgress(
               Math.min(received / update.asset.size, 1),
             );
+            this.#publish({ phase: "downloading", version: update.version,
+              percent: Math.floor(Math.min(received / update.asset.size, 1) * 100) });
           } catch (error) {
             policyFailure =
               error instanceof Error
@@ -536,7 +594,7 @@ export class AppUpdateRuntime {
   async #offerBrowserFallback(
     update: AppUpdate,
     error: unknown,
-  ): Promise<void> {
+  ): Promise<boolean> {
     console.error("Minke update download failed:", error);
     const choice = await this.#showMessageBox({
       type: "error",
@@ -546,17 +604,21 @@ export class AppUpdateRuntime {
         error: errorMessage(error),
       }),
       buttons: [
+        this.#options.text("update.retry"),
         this.#options.text("update.openReleasePage"),
         this.#options.text("update.cancel"),
       ],
       defaultId: 0,
-      cancelId: 1,
+      cancelId: 2,
       noLink: true,
     });
-    if (choice.response !== 0 || this.#disposed) return;
+    if (this.#disposed) return false;
+    if (choice.response === 0) return true;
+    if (choice.response !== 1) return false;
     await shell.openExternal(
       `https://github.com/lencx/Minke/releases/tag/${update.tag}`,
     );
+    return false;
   }
 
   #showMessageBox(

@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { mkdtemp, rm, writeFile } = require('node:fs/promises');
+const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { app, BrowserWindow } = require('electron');
 const { buildSync } = require('esbuild');
@@ -47,19 +49,12 @@ function aboutBundle() {
           : match,
       );
 
-    let resolveUpdate;
-    const checkForUpdates = () =>
-      new Promise((resolve) => {
-        resolveUpdate = resolve;
-      });
-
-    globalThis.resolveAboutUpdate = (result) => {
-      resolveUpdate(result);
-    };
+    globalThis.updateOpens = 0;
+    const openUpdates = () => { globalThis.updateOpens++; };
 
     createRoot(document.getElementById("root")).render(
       <AboutDialog
-        checkForUpdates={checkForUpdates}
+        openUpdates={openUpdates}
         iconUrl="data:image/gif;base64,R0lGODlhAQABAAAAACw="
         info={{
           available: true,
@@ -74,8 +69,10 @@ function aboutBundle() {
       />,
     );
   `;
-  return buildSync({
+  const result = buildSync({
     alias: {
+      react: join(projectRoot, 'node_modules', 'react'),
+      'react-dom': join(projectRoot, 'node_modules', 'react-dom'),
       '@minke/harness-overlay': join(
         projectRoot,
         'packages',
@@ -88,6 +85,7 @@ function aboutBundle() {
     jsx: 'automatic',
     loader: {
       '.css': 'text',
+      '.module.css': 'local-css',
     },
     platform: 'browser',
     stdin: {
@@ -96,8 +94,13 @@ function aboutBundle() {
       resolveDir: projectRoot,
     },
     target: 'chrome120',
+    outfile: join(projectRoot, 'work', 'about-layout-fixture.js'),
     write: false,
-  }).outputFiles[0].text.replaceAll('</script>', '<\\/script>');
+  });
+  const css = result.outputFiles.find(file => file.path.endsWith('.css')).text;
+  const script = result.outputFiles.find(file => file.path.endsWith('.js')).text;
+  return `const nativeStyle = document.createElement('style'); nativeStyle.textContent = ${JSON.stringify(css)}; document.head.append(nativeStyle);\n${script}`
+    .replaceAll('</script>', '<\\/script>');
 }
 
 async function geometry(window) {
@@ -159,6 +162,7 @@ async function run() {
     },
   );
   const bundle = aboutBundle();
+  const fixtureDirectory = await mkdtemp(join(tmpdir(), 'minke-about-layout-'));
   const html = `
     <!doctype html>
     <html>
@@ -205,9 +209,10 @@ async function run() {
   `;
 
   try {
-    await window.loadURL(
-      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
-    );
+    // Native UI modules make this fixture larger than Chromium's data-URL limit.
+    const fixturePath = join(fixtureDirectory, 'index.html');
+    await writeFile(fixturePath, html);
+    await window.loadFile(fixturePath);
     await waitFor(
       window,
       'document.querySelector("[data-minke-about-trigger]") !== null',
@@ -229,33 +234,32 @@ async function run() {
     );
 
     const initial = await geometry(window);
+    assert.equal(initial.update.height, 36, 'update action uses the native medium Button');
+    assert.equal(initial.project.height, initial.update.height, 'project link aligns with the native action');
     await window.webContents.executeJavaScript(
       'document.querySelector("[data-minke-about-update-check]").click()',
     );
-    await waitFor(
-      window,
-      'document.querySelector("[data-minke-about-update-check]").disabled',
-      'update check to start',
-    );
-    const checking = await geometry(window);
-
+    await waitFor(window,
+      'document.querySelector("[data-minke-about-dialog]") === null && globalThis.updateOpens === 1',
+      'About hands off to the standard update action');
+    await waitFor(window,
+      'document.activeElement === document.querySelector("[data-minke-about-trigger]")',
+      'focus returns to the About trigger');
     await window.webContents.executeJavaScript(
-      'globalThis.resolveAboutUpdate("update-available")',
+      'document.querySelector("[data-minke-about-trigger]").click()',
     );
-    await waitFor(
-      window,
-      '!document.querySelector("[data-minke-about-update-check]").disabled && document.querySelector("[role=status] [data-active=true]") !== null',
-      'update check to finish',
-    );
-    const complete = await geometry(window);
-
-    assertRectStable(initial.update, checking.update, 'update button');
-    assertRectStable(initial.project, checking.project, 'project button');
-    assertRectStable(initial.panel, checking.panel, 'panel while checking');
-    assertRectStable(initial.panel, complete.panel, 'panel after checking');
+    await waitFor(window,
+      'document.querySelector("[data-minke-about-update-check]") !== null',
+      'About reopens after the native update action');
+    const reopened = await geometry(window);
+    assertRectStable(initial.update, reopened.update, 'update button');
+    assertRectStable(initial.project, reopened.project, 'project button');
+    assertRectStable(initial.panel, reopened.panel, 'panel after reopening');
+    assert.equal(await window.webContents.executeJavaScript('document.querySelector("[role=status]") === null'), true);
     process.stdout.write('About dialog stacking and update layout runtime regression passed\n');
   } finally {
     window.destroy();
+    await rm(fixtureDirectory, { recursive: true, force: true });
     app.quit();
   }
 }

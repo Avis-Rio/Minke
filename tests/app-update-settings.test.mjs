@@ -20,15 +20,12 @@ import {
   MinkeConfigStore,
 } from "@minke/desktop/main/minke-config.ts";
 import {
-  APP_UPDATE_CHECK_CHANNEL,
   APP_UPDATE_SETTINGS_READ_CHANNEL,
   APP_UPDATE_SETTINGS_WRITE_CHANNEL,
   DEFAULT_APP_UPDATE_SETTINGS,
-  parseAppUpdateCheckResult,
   parseAppUpdateSettings,
 } from "@minke/harness-overlay/app-update-contract.ts";
 import {
-  desktopAppUpdatePort,
   desktopAppUpdateSettingsStore,
 } from "@minke/harness-overlay/client/desktop/settings.ts";
 import {
@@ -81,14 +78,6 @@ test("app update settings use one exact boolean contract", () => {
     () => parseAppUpdateSettings({ autoDownload: "yes" }),
     /app update settings/u,
   );
-  assert.equal(
-    parseAppUpdateCheckResult("update-available"),
-    "update-available",
-  );
-  assert.throws(
-    () => parseAppUpdateCheckResult("downloaded"),
-    /update check result/u,
-  );
   assert.throws(
     () =>
       parseAppUpdateSettings({
@@ -122,7 +111,6 @@ test("app update settings IPC authorizes writes and applies them live", async ()
   const handlers = new Map();
   const applied = [];
   let allowPersistence = () => {};
-  let checks = 0;
   const persistenceGate = new Promise((resolve) => {
     allowPersistence = resolve;
   });
@@ -145,10 +133,6 @@ test("app update settings IPC authorizes writes and applies them live", async ()
     (settings) => {
       applied.push(settings);
     },
-    async () => {
-      checks += 1;
-      return "up-to-date";
-    },
     (event) => event === "allowed",
   );
 
@@ -163,17 +147,12 @@ test("app update settings IPC authorizes writes and applies them live", async ()
     await handlers.get(APP_UPDATE_SETTINGS_READ_CHANNEL)("allowed"),
     { autoDownload: false },
   );
-  assert.equal(
-    await handlers.get(APP_UPDATE_CHECK_CHANNEL)("allowed"),
-    "up-to-date",
-  );
-  assert.equal(checks, 1);
   await assert.rejects(
     handlers.get(APP_UPDATE_SETTINGS_READ_CHANNEL)("denied"),
     /unauthorized/u,
   );
   await assert.rejects(
-    handlers.get(APP_UPDATE_CHECK_CHANNEL)("denied"),
+    handlers.get(APP_UPDATE_SETTINGS_WRITE_CHANNEL)("denied", { autoDownload: true }),
     /unauthorized/u,
   );
 
@@ -187,9 +166,6 @@ test("desktop update settings bridge hydrates and persists the Settings toggle",
   const store = desktopAppUpdateSettingsStore({
     minkeDesktop: {
       appUpdate: {
-        async check() {
-          return "up-to-date";
-        },
         async read() {
           return settings;
         },
@@ -217,40 +193,7 @@ test("desktop update settings bridge hydrates and persists the Settings toggle",
   runtime.dispose();
 });
 
-test("desktop update port validates manual check results", async () => {
-  const port = desktopAppUpdatePort({
-    minkeDesktop: {
-      appUpdate: {
-        async check() {
-          return "update-available";
-        },
-        async read() {
-          return { autoDownload: true };
-        },
-        async write() {},
-      },
-    },
-  });
-  assert.equal(port.available, true);
-  assert.equal(await port.check(), "update-available");
-
-  const invalid = desktopAppUpdatePort({
-    minkeDesktop: {
-      appUpdate: {
-        async check() {
-          return "installer-opened";
-        },
-        async read() {
-          return { autoDownload: true };
-        },
-        async write() {},
-      },
-    },
-  });
-  await assert.rejects(invalid.check(), /update check result/u);
-});
-
-test("About renders stable localized update action and status slots", () => {
+test("About exposes only a localized entry to the standard update action", () => {
   const t = (key, params) =>
     aboutZh[key].replace(/\{(\w+)\}/gu, (match, name) =>
       params !== undefined && Object.hasOwn(params, name)
@@ -259,7 +202,7 @@ test("About renders stable localized update action and status slots", () => {
     );
   const html = renderToStaticMarkup(
     createElement(AboutPanel, {
-      checkForUpdates: async () => "up-to-date",
+      openUpdates() {},
       iconUrl: "data:image/png;base64,AA==",
       info: {
         available: true,
@@ -274,20 +217,8 @@ test("About renders stable localized update action and status slots", () => {
     }),
   );
   assert.equal(html.includes("检查更新"), true);
-  assert.equal(html.includes("正在检查…"), true);
-  assert.equal(
-    html.includes("minke-about__update-check-label"),
-    true,
-  );
-  assert.equal(
-    html.includes("minke-about__update-status-label"),
-    true,
-  );
-  assert.equal(html.includes('role="status"'), true);
-  assert.equal(
-    html.includes('class="minke-about__action"'),
-    true,
-  );
+  assert.equal(html.includes('role="status"'), false, "DSH owns update presentation");
+  assert.match(html, /<button[^>]*data-minke-about-update-check[^>]*>检查更新<\/button>/u);
 });
 
 test("personal preferences localize the automatic update download control", () => {

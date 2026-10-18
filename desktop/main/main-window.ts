@@ -1,3 +1,6 @@
+import { DesktopBrowserGuests } from "./browser-guests.ts";
+import { bindWindowDiagnostics } from "./window-diagnostics.ts";
+import { bindWindowContextMenu } from "./window-context-menu.ts";
 import {
   app,
   BrowserWindow,
@@ -7,9 +10,11 @@ import {
   nativeTheme,
   session,
   shell,
+  systemPreferences,
   type IpcMainEvent,
   type SaveDialogOptions,
   type Session,
+  type WebContents,
 } from "electron";
 import { join, parse } from "node:path";
 import {
@@ -20,20 +25,12 @@ import {
 import {
   type DesktopLocale,
 } from "@minke/desktop/locale-contract";
-import {
-  TABS_WEB_PARTITION,
-} from "@minke/harness-overlay/tabs/contract";
-import {
-  SHORTCUT_INVOKE_CHANNEL,
-  type ProductShortcutActionId,
-} from "@minke/harness-overlay/shortcut-contract";
 import type {
   AgentBrowserRuntime,
 } from "./agent-browser";
 import {
   installHarnessPermissionPolicy,
 } from "./harness-permission-policy";
-import { bindMacOSWindowButtonSpacing } from "./macos-window-controls";
 import {
   macOSWindowOptions,
 } from "./macos-window";
@@ -49,11 +46,11 @@ import {
 } from "./session-export";
 import {
   bindTabs,
-  canGrantTabWebPermission,
   type TabsBinding,
 } from "./tabs";
-import { bindWindowLocale } from "./window-locale";
+import { bindWindowLocale, readHarnessLocaleBootstrap } from "./window-locale";
 import { bindWindowTheme } from "./window-theme";
+import { bindWindowFullscreen } from "./window-fullscreen.ts";
 
 const PRODUCT_NAME = "Minke";
 const BACKGROUND_COLOR = "#0b1220";
@@ -65,6 +62,14 @@ export interface MainWindowRuntimeOptions {
   harnessUrl(): string | undefined;
   attachHarness(window: BrowserWindow): Promise<void>;
   refreshMenu(): void;
+  attachShortcuts?(window: BrowserWindow): void;
+  attachGuestShortcuts?(window: BrowserWindow, guest: WebContents, name: string): (() => void) | undefined;
+  reportFailure?(error: Error): void;
+  consoleError?(message: string): void;
+  canClose?(): boolean;
+  requestQuit?(): void;
+  sessionEnding?(): void;
+  sessionContinuing?(): void;
 }
 
 function canOpenExternally(value: string): boolean {
@@ -87,11 +92,14 @@ export class MainWindowRuntime {
   #window: BrowserWindow | undefined;
   #sessionLogExportBinding: SessionLogExportBinding | undefined;
   #tabsBinding: TabsBinding | undefined;
-  #tabsWebSession: Session | undefined;
-  #tabsWebUserAgent: string | undefined;
+  readonly #browserGuests: DesktopBrowserGuests;
 
   constructor(options: MainWindowRuntimeOptions) {
     this.#options = options;
+    this.#browserGuests = new DesktopBrowserGuests({
+      harnessUrl: options.harnessUrl, external: shell, agentBrowser: options.agentBrowser,
+      preload: join(__dirname, "tabs-web-preload.js"),
+    });
     this.#surfaceSession = session.fromPartition(
       MAIN_WINDOW_PARTITION,
     );
@@ -105,6 +113,13 @@ export class MainWindowRuntime {
     installHarnessPermissionPolicy(this.#surfaceSession, {
       harnessUrl: this.#options.harnessUrl,
       activeWebContents: () => this.#window?.webContents,
+      microphone: {
+        isGranted: () => process.platform !== "darwin" ||
+          systemPreferences.getMediaAccessStatus("microphone") === "granted",
+        request: () => process.platform === "darwin"
+          ? systemPreferences.askForMediaAccess("microphone")
+          : Promise.resolve(true),
+      },
     });
   }
 
@@ -113,10 +128,9 @@ export class MainWindowRuntime {
     return this.#surfaceSession.getUserAgent();
   }
 
-  /** Apply the ordinary Web Tab identity when its guest Session is needed. */
+  /** Apply the desktop browser identity when a guest Session is first needed. */
   setWebUserAgent(userAgent: string): void {
-    this.#tabsWebUserAgent = userAgent;
-    this.#tabsWebSession?.setUserAgent(userAgent);
+    this.#browserGuests.setUserAgent(userAgent);
   }
 
   show(): void {
@@ -154,23 +168,29 @@ export class MainWindowRuntime {
         },
       }),
     );
-    const windowButtonSpacing = process.platform === "darwin"
-      ? bindMacOSWindowButtonSpacing(
-          window,
-          { platform: process.platform },
-        )
-      : undefined;
     bindMainWindowDevToolsShortcut(Menu);
-    const windowTheme = bindWindowTheme(window, nativeTheme);
+    const authorizeWindow = (candidate: unknown): boolean => {
+      const event = candidate as IpcMainEvent;
+      return event.senderFrame === window.webContents.mainFrame && this.authorize(event, window);
+    };
+    const windowTheme = bindWindowTheme(window, nativeTheme, authorizeWindow);
+    const disposeFullscreen = bindWindowFullscreen(window);
     const windowLocale = bindWindowLocale(
       window,
       this.#options.locale,
-      (candidate) =>
-        this.authorize(candidate as IpcMainEvent, window),
+      authorizeWindow,
+      async () => {
+        const origin = this.#options.harnessUrl();
+        if (origin === undefined) throw new Error("locale bootstrap: Harness is unavailable");
+        return readHarnessLocaleBootstrap(origin, app.getPreferredSystemLanguages(),
+          (url, init) => this.#surfaceSession.fetch(url, init));
+      },
     );
     this.#window = window;
+    this.#options.attachShortcuts?.(window);
     this.#options.refreshMenu();
     this.#protectNavigation(window);
+    const disposeContextMenu = bindWindowContextMenu(window, Menu, key => this.#text(key));
 
     const tabsBinding = bindTabs(
       ipcMain,
@@ -183,30 +203,19 @@ export class MainWindowRuntime {
           app.getPath("userData"),
         ),
         agentBrowser: this.#options.agentBrowser,
-        prepareWebSession: () => this.#prepareTabsWebSession(),
       },
     );
     this.#tabsBinding = tabsBinding;
+    const browserBinding = this.#browserGuests.bind(ipcMain, window.webContents,
+      candidate => this.authorize(candidate, window),
+      (guest, name) => this.#options.attachGuestShortcuts?.(window, guest, name) ?? (() => {}));
 
     const sessionLogExportBinding = bindSessionLogExport(
-      ipcMain,
       window.webContents.session,
       window.webContents,
       shell,
       {
-        authorize: (candidate) => this.authorize(candidate, window),
         harnessUrl: this.#options.harnessUrl,
-        chooseDestination: async (suggestedFilename) => {
-          const result = await dialog.showSaveDialog(
-            window,
-            this.#sessionExportSaveDialogOptions(
-              suggestedFilename,
-            ),
-          );
-          return result.canceled || result.filePath === ""
-            ? undefined
-            : result.filePath;
-        },
         saveDialogOptions: (suggestedFilename) =>
           this.#sessionExportSaveDialogOptions(suggestedFilename),
         reportError: (error) => {
@@ -231,13 +240,30 @@ export class MainWindowRuntime {
     );
     this.#sessionLogExportBinding = sessionLogExportBinding;
 
+    const disposeDiagnostics = bindWindowDiagnostics(window.webContents,
+      error => { if (!window.isDestroyed()) this.#options.reportFailure?.(error); },
+      message => this.#options.consoleError?.(message));
+    window.on("close", event => {
+      if (process.platform !== "darwin" && this.#options.canClose?.() === false) {
+        event.preventDefault();
+        this.#options.requestQuit?.();
+      }
+    });
+    if (process.platform === "win32") window.on("session-end", () => this.#options.sessionEnding?.());
+    else {
+      window.on("focus", () => this.#options.sessionContinuing?.());
+      window.on("show", () => this.#options.sessionContinuing?.());
+    }
     window.once("ready-to-show", () => window.show());
     window.once("closed", () => {
-      windowButtonSpacing?.dispose();
+      disposeDiagnostics();
+      disposeContextMenu();
       sessionLogExportBinding.dispose();
+      browserBinding.dispose();
       tabsBinding.dispose();
       windowLocale.dispose();
       windowTheme.dispose();
+      disposeFullscreen();
       if (this.#sessionLogExportBinding === sessionLogExportBinding) {
         this.#sessionLogExportBinding = undefined;
       }
@@ -252,11 +278,6 @@ export class MainWindowRuntime {
     return window;
   }
 
-  async loadBootstrap(): Promise<void> {
-    const window = this.#window;
-    if (window !== undefined) await this.#loadBootstrap(window);
-  }
-
   authorize(
     candidate: Pick<IpcMainEvent, "sender" | "senderFrame">,
     window: BrowserWindow | undefined = this.#window,
@@ -269,30 +290,6 @@ export class MainWindowRuntime {
     );
   }
 
-  async invokeShortcut(
-    id: ProductShortcutActionId,
-  ): Promise<void> {
-    const window = this.#window ?? await this.create();
-    const harnessUrl = this.#options.harnessUrl();
-    if (
-      window.isDestroyed() ||
-      window.webContents.isDestroyed()
-    ) {
-      return;
-    }
-    if (
-      harnessUrl !== undefined &&
-      !this.#isHarnessUrl(window.webContents.getURL())
-    ) {
-      await window.loadURL(harnessUrl);
-    }
-    if (!this.#isHarnessUrl(window.webContents.getURL())) return;
-    if (window.isMinimized()) window.restore();
-    window.show();
-    window.focus();
-    window.webContents.send(SHORTCUT_INVOKE_CHANNEL, id);
-  }
-
   #activeLocale(): DesktopLocale {
     return this.#options.locale.getSnapshot().active;
   }
@@ -302,33 +299,6 @@ export class MainWindowRuntime {
     params?: DesktopTranslateParams,
   ): string {
     return this.#options.locale.t(key, params);
-  }
-
-  #prepareTabsWebSession(): void {
-    if (this.#tabsWebSession !== undefined) return;
-    const tabsWebSession = session.fromPartition(
-      TABS_WEB_PARTITION,
-    );
-    tabsWebSession.setPermissionCheckHandler(
-      (_webContents, permission, requestingOrigin, details) =>
-        canGrantTabWebPermission(
-          permission,
-          details.requestingUrl ?? requestingOrigin,
-        ),
-    );
-    tabsWebSession.setPermissionRequestHandler(
-      (_webContents, permission, callback, details) =>
-        callback(
-          canGrantTabWebPermission(
-            permission,
-            details.requestingUrl,
-          ),
-        ),
-    );
-    if (this.#tabsWebUserAgent !== undefined) {
-      tabsWebSession.setUserAgent(this.#tabsWebUserAgent);
-    }
-    this.#tabsWebSession = tabsWebSession;
   }
 
   #bootstrapUrl(): string | undefined {

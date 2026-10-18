@@ -1,175 +1,70 @@
 import assert from "node:assert/strict";
-import {
-  mkdtemp,
-  readFile,
-  rm,
-} from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, test } from "node:test";
-import {
-  bindShortcutSettingsIpc,
-} from "@minke/desktop/main/shortcut-settings.ts";
-import {
-  MINKE_CONFIG_VERSION,
-  MinkeConfigStore,
-} from "@minke/desktop/main/minke-config.ts";
-import {
-  SHORTCUT_SETTINGS_READ_CHANNEL,
-  SHORTCUT_SETTINGS_WRITE_CHANNEL,
-} from "@minke/harness-overlay/shortcut-contract.ts";
-import {
-  DEFAULT_TERMINAL_SETTINGS,
-} from "@minke/harness-overlay/terminal-settings-contract.ts";
+import test from "node:test";
+import { desktopKeybindings } from "@minke/desktop/main/shortcut-persistence.ts";
+const definition = { id: "minke.palette.open", defaults: { "desktop:macos": { code: "KeyK", modifiers: ["primary", "shift"] } } };
 
-const roots = [];
-
-async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "minke-shortcuts-"));
-  roots.push(root);
-  const config = new MinkeConfigStore(root);
-  return {
-    path: config.path,
-    store: config.shortcuts,
-  };
-}
-
-afterEach(async () => {
-  await Promise.all(
-    roots.splice(0).map(async (root) => {
-      await rm(root, { recursive: true, force: true });
-    }),
-  );
+test("legacy migration preserves effective bindings and dormant overrides; DSH edits are durable and revision checked", async () => {
+  const root = await mkdtemp(join(tmpdir(), "minke-shortcut-migration-"));
+  let reads = 0;
+  let persistence;
+  try {
+    const legacy = async () => { reads++; return { "palette.open": "Mod+L", "session.new": "", "future.action": "Ctrl+Alt+1" }; };
+    persistence = desktopKeybindings(root, "macos", () => {}, legacy);
+    persistence.setDefinitions([definition]);
+    const first = await persistence.readCurrent();
+    assert.equal(first.status, "ready");
+    const bindings = first.document.profiles["desktop:macos"];
+    assert.deepEqual(bindings["minke.palette.open"], { code: "KeyL", modifiers: ["primary"] });
+    assert.equal(bindings["session.new"], null);
+    assert.deepEqual(bindings["sidebar.left.toggle"], { code: "KeyS", modifiers: ["primary"] });
+    assert.deepEqual(bindings["minke.future.action"], { code: "Digit1", modifiers: ["control", "alt"] });
+    const saved = await persistence.edit({ type: "set", id: definition.id, binding: null }, first.revision);
+    assert.equal(saved.status, "saved");
+    assert.equal((await persistence.edit({ type: "reset", id: definition.id }, first.revision)).status, "stale");
+    persistence.dispose();
+    persistence = desktopKeybindings(root, "macos", () => {}, legacy);
+    persistence.setDefinitions([definition]);
+    const reopened = await persistence.readCurrent();
+    assert.equal(reopened.document.profiles["desktop:macos"][definition.id], null);
+    assert.equal(reads, 1, "reload never reapplies the old configuration");
+    assert.equal(JSON.parse(await readFile(join(root, "keybindings.json"), "utf8")).schemaVersion, 2);
+  } finally { persistence?.dispose(); await rm(root, { recursive: true, force: true }); }
 });
 
-function assertDefaultRemoteSettings(settings) {
-  assert.match(
-    settings.cloudflare.generatedLabel,
-    /^m-[0123456789abcdefghjkmnpqrstvwxyz]{16}$/u,
-  );
-  assert.deepEqual(settings, {
-    enabled: false,
-    method: "tailscale",
-    tailscale: {
-      transport: "serve",
-      ipAddress: "",
-    },
-    cloudflare: {
-      hostnameMode: "generated",
-      domain: "",
-      generatedLabel:
-        settings.cloudflare.generatedLabel,
-      customHostname: "",
-      teamName: "",
-      audience: "",
-      tunnel: "",
-      configPath: "",
-      originPort: 49_321,
-    },
-  });
-}
-
-test("the desktop store writes the shared Minke config", async () => {
-  const { path, store } = await fixture();
-  assert.deepEqual(await store.read(), {});
-
-  await store.write({
-    "settings.open": "Mod+Comma",
-    "session.new": "",
-  });
-
-  assert.deepEqual(await store.read(), {
-    "settings.open": "Mod+Comma",
-    "session.new": "",
-  });
-  const document = JSON.parse(await readFile(path, "utf8"));
-  const { remote, ...documentWithoutRemote } = document;
-  assert.deepEqual(documentWithoutRemote, {
-    version: MINKE_CONFIG_VERSION,
-    shortcuts: {
-      "settings.open": "Mod+Comma",
-      "session.new": "",
-    },
-    terminal: DEFAULT_TERMINAL_SETTINGS,
-    modelRuntime: {
-      lmStudio: { enabled: false },
-      ollama: { enabled: false },
-    },
-    plugins: {
-      safeMode: false,
-      disabledPlugins: [],
-    },
-    webSearch: {
-      fallbackEnabled: true,
-    },
-    telegramNetwork: {
-      httpProxyUrl: "",
-    },
-    discordNetwork: {
-      httpProxyUrl: "",
-    },
-    appUpdate: {
-      autoDownload: true,
-    },
-    browser: {
-      webUserAgent: "",
-      agentUserAgent: "",
-    },
-  });
-  assertDefaultRemoteSettings(remote);
+test("future or malformed DSH preferences are never overwritten by migration", async () => {
+  const root = await mkdtemp(join(tmpdir(), "minke-shortcut-invalid-"));
+  let persistence;
+  try {
+    const path = join(root, "keybindings.json");
+    const original = '{"schemaVersion":999,"profiles":{}}';
+    await writeFile(path, original);
+    persistence = desktopKeybindings(root, "macos", () => {}, async () => { throw new Error("must not migrate"); });
+    persistence.setDefinitions([definition]);
+    const snapshot = await persistence.readCurrent();
+    assert.equal(snapshot.status, "unreadable");
+    assert.equal(snapshot.error, "future");
+    assert.equal((await persistence.edit({ type: "reset-all" }, snapshot.revision)).status, "unreadable");
+    assert.equal(await readFile(path, "utf8"), original);
+  } finally { persistence?.dispose(); await rm(root, { recursive: true, force: true }); }
 });
 
-test("invalid bindings never reach disk", async () => {
-  const { store } = await fixture();
-
-  await assert.rejects(
-    store.write({ "session.new": "N" }),
-    /invalid shortcut binding/u,
-  );
-  assert.deepEqual(await store.read(), {});
-});
-
-test("IPC handlers authorize both reads and writes", async () => {
-  const { store } = await fixture();
-  const handlers = new Map();
-  const persisted = [];
-  const binding = bindShortcutSettingsIpc(
-    {
-      handle(channel, listener) {
-        handlers.set(channel, listener);
-      },
-      removeHandler(channel) {
-        handlers.delete(channel);
-      },
-    },
-    store,
-    (event) => event === "allowed",
-    (bindings) => persisted.push(bindings),
-  );
-
-  await handlers.get(SHORTCUT_SETTINGS_WRITE_CHANNEL)(
-    "allowed",
-    { "session.new": "Mod+N" },
-  );
-  assert.deepEqual(
-    await handlers.get(SHORTCUT_SETTINGS_READ_CHANNEL)("allowed"),
-    { "session.new": "Mod+N" },
-  );
-  assert.deepEqual(persisted, [{ "session.new": "Mod+N" }]);
-  await assert.rejects(
-    handlers.get(SHORTCUT_SETTINGS_WRITE_CHANNEL)(
-      "allowed",
-      { "session.new": "N" },
-    ),
-    /invalid shortcut binding/u,
-  );
-  assert.deepEqual(persisted, [{ "session.new": "Mod+N" }]);
-  await assert.rejects(
-    handlers.get(SHORTCUT_SETTINGS_READ_CHANNEL)("denied"),
-    /unauthorized/u,
-  );
-
-  binding.dispose();
-  binding.dispose();
-  assert.equal(handlers.size, 0);
+test("unsupported legacy keys are reported once and preserve the original store", async () => {
+  const root = await mkdtemp(join(tmpdir(), "minke-shortcut-unsupported-"));
+  let persistence;
+  try {
+    const original = { "palette.open": "Mod+Home" };
+    const notices = [];
+    persistence = desktopKeybindings(root, "macos", () => {}, async () => original, bindings => notices.push(bindings));
+    persistence.setDefinitions([definition]);
+    const snapshot = await persistence.readCurrent();
+    assert.equal(snapshot.status, "ready");
+    assert.equal(snapshot.document.profiles["desktop:macos"][definition.id], null);
+    assert.deepEqual(notices, [["palette.open: Mod+Home"]]);
+    assert.deepEqual(original, { "palette.open": "Mod+Home" });
+    await persistence.readCurrent();
+    assert.equal(notices.length, 1);
+  } finally { persistence?.dispose(); await rm(root, { recursive: true, force: true }); }
 });

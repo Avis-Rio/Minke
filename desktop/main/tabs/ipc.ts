@@ -3,9 +3,7 @@ import type {
   IpcMainEvent,
   IpcMainInvokeEvent,
   WebContents,
-  WebPreferences,
 } from "electron";
-import { join } from "node:path";
 import {
   parseTabsLayoutStateUpdate,
   TABS_LAYOUT_STATE_READ_CHANNEL,
@@ -13,12 +11,8 @@ import {
   TABS_OPEN_EXTERNAL_CHANNEL,
 } from "@minke/harness-overlay/tabs/contract.ts";
 import {
-  TABS_WEB_EXTERNAL_LINK_CHANNEL,
-} from "@minke/harness-overlay/tabs/web-link-contract.ts";
-import {
   parseFileManagerDiffRequest,
   parseFileManagerListRequest,
-  parseFileManagerOpenRequest,
   parseFileManagerPreviewRequest,
   parseFileManagerUnwatchRequest,
   parseFileManagerViewStateUpdate,
@@ -27,7 +21,6 @@ import {
   TABS_FILES_DIFF_CHANNEL,
   TABS_FILES_CHANGE_CHANNEL,
   TABS_FILES_LIST_CHANNEL,
-  TABS_FILES_OPEN_CHANNEL,
   TABS_FILES_PREVIEW_CHANNEL,
   TABS_FILES_UNWATCH_CHANNEL,
   TABS_FILES_VIEW_STATE_READ_CHANNEL,
@@ -45,22 +38,15 @@ import {
   FilesViewStateStore,
 } from "./files-view-state.ts";
 import {
-  bindWebTabHistory,
-} from "./history.ts";
-import {
   TabsLayoutStateStore,
 } from "./layout-state.ts";
 import {
   openNormalizedTabExternally,
-  openUserGestureTabLinkExternally,
-  protectTabWebviewGuest,
-  secureTabWebview,
 } from "./security.ts";
 import type {
   AgentBrowserRuntime,
 } from "../agent-browser";
 import type {
-  ExternalPathOpener,
   ExternalTabOpener,
   TabsAuthorization,
   TabsBinding,
@@ -70,11 +56,10 @@ interface TabsBindingOptions {
   readonly fileSystemRoot: string;
   readonly minkeConfigPath: string;
   readonly agentBrowser: AgentBrowserRuntime;
-  readonly prepareWebSession: () => void;
 }
 
 /**
- * Bind the trusted main-process half of the Web tab adapter.
+ * Bind file/layout state and Agent Browser projection for Minke tabs.
  * Renderer requests are accepted only from the active Harness document.
  */
 export function bindTabs(
@@ -83,14 +68,13 @@ export function bindTabs(
     "handle" | "on" | "removeHandler" | "removeListener"
   >,
   embedder: WebContents,
-  external: ExternalTabOpener & ExternalPathOpener,
+  external: ExternalTabOpener,
   authorize: TabsAuthorization,
   options: TabsBindingOptions,
 ): TabsBinding {
   const files = new FileManagerRuntime({
     rootPath: options.fileSystemRoot,
     allowCrossVolumeAccess: true,
-    openPath: (path) => external.openPath(path),
   });
   const filesViewState = new FilesViewStateStore(
     options.minkeConfigPath,
@@ -105,72 +89,12 @@ export function bindTabs(
       }
     },
   });
-  const attachedWebGuests = new Set<WebContents>();
-  const webGuestHistoryBindings =
-    new Map<WebContents, () => void>();
   const agentBrowserProjection =
     options.agentBrowser.bindWindowProjection(
       ipc,
       embedder,
       authorize,
     );
-  const handleWillAttach = (
-    event: Electron.Event,
-    webPreferences: WebPreferences,
-    params: Record<string, string>,
-  ): void => {
-    const agentBrowserDecision =
-      options.agentBrowser.secureWebview(
-        webPreferences,
-        params,
-      );
-    if (agentBrowserDecision === "secured") return;
-    if (agentBrowserDecision === "rejected") {
-      event.preventDefault();
-      return;
-    }
-    const secured = secureTabWebview(
-      webPreferences,
-      params,
-      join(__dirname, "tabs-web-preload.js"),
-    );
-    if (!secured) {
-      event.preventDefault();
-      return;
-    }
-    options.prepareWebSession();
-  };
-  const handleDidAttach = (
-    _event: Electron.Event,
-    guest: WebContents,
-  ): void => {
-    if (options.agentBrowser.attachGuest(embedder, guest)) {
-      return;
-    }
-    attachedWebGuests.add(guest);
-    const disposeHistory = bindWebTabHistory(
-      guest,
-      options.agentBrowser,
-    );
-    const handleDestroyed = (): void => {
-      attachedWebGuests.delete(guest);
-      webGuestHistoryBindings.delete(guest);
-      disposeHistory();
-    };
-    webGuestHistoryBindings.set(guest, () => {
-      guest.removeListener("destroyed", handleDestroyed);
-      disposeHistory();
-    });
-    guest.once("destroyed", handleDestroyed);
-    protectTabWebviewGuest(guest, external);
-  };
-  const handleGuestExternalLink = (
-    event: IpcMainEvent,
-    candidate: unknown,
-  ): void => {
-    if (!attachedWebGuests.has(event.sender)) return;
-    openUserGestureTabLinkExternally(external, candidate);
-  };
   const handleOpenExternal = (
     event: IpcMainEvent,
     candidate: unknown,
@@ -218,15 +142,6 @@ export function bindTabs(
     return await files.diff(
       parseFileManagerDiffRequest(request),
     );
-  };
-  const handleFilesOpen = async (
-    event: IpcMainInvokeEvent,
-    request: unknown,
-  ): Promise<void> => {
-    if (!authorize(event)) {
-      throw new Error("unauthorized Files request");
-    }
-    await files.open(parseFileManagerOpenRequest(request));
   };
   const handleFilesPreview = async (
     event: IpcMainInvokeEvent,
@@ -292,13 +207,7 @@ export function bindTabs(
     }
   };
 
-  embedder.on("will-attach-webview", handleWillAttach);
-  embedder.on("did-attach-webview", handleDidAttach);
   ipc.on(TABS_OPEN_EXTERNAL_CHANNEL, handleOpenExternal);
-  ipc.on(
-    TABS_WEB_EXTERNAL_LINK_CHANNEL,
-    handleGuestExternalLink,
-  );
   ipc.handle(
     TABS_LAYOUT_STATE_READ_CHANNEL,
     handleTabsLayoutStateRead,
@@ -309,7 +218,6 @@ export function bindTabs(
   );
   ipc.handle(TABS_FILES_LIST_CHANNEL, handleFilesList);
   ipc.handle(TABS_FILES_DIFF_CHANNEL, handleFilesDiff);
-  ipc.handle(TABS_FILES_OPEN_CHANNEL, handleFilesOpen);
   ipc.handle(TABS_FILES_PREVIEW_CHANNEL, handleFilesPreview);
   ipc.handle(TABS_FILES_WRITE_CHANNEL, handleFilesWrite);
   ipc.handle(
@@ -328,26 +236,14 @@ export function bindTabs(
     dispose(): void {
       if (disposed) return;
       disposed = true;
-      embedder.removeListener("will-attach-webview", handleWillAttach);
-      embedder.removeListener("did-attach-webview", handleDidAttach);
       ipc.removeListener(
         TABS_OPEN_EXTERNAL_CHANNEL,
         handleOpenExternal,
       );
-      ipc.removeListener(
-        TABS_WEB_EXTERNAL_LINK_CHANNEL,
-        handleGuestExternalLink,
-      );
-      for (const disposeHistory of webGuestHistoryBindings.values()) {
-        disposeHistory();
-      }
-      webGuestHistoryBindings.clear();
-      attachedWebGuests.clear();
       ipc.removeHandler(TABS_LAYOUT_STATE_READ_CHANNEL);
       ipc.removeHandler(TABS_LAYOUT_STATE_WRITE_CHANNEL);
       ipc.removeHandler(TABS_FILES_LIST_CHANNEL);
       ipc.removeHandler(TABS_FILES_DIFF_CHANNEL);
-      ipc.removeHandler(TABS_FILES_OPEN_CHANNEL);
       ipc.removeHandler(TABS_FILES_PREVIEW_CHANNEL);
       ipc.removeHandler(TABS_FILES_WRITE_CHANNEL);
       ipc.removeHandler(TABS_FILES_VIEW_STATE_READ_CHANNEL);

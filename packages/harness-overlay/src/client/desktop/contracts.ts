@@ -15,10 +15,6 @@ import type {
   PluginManagementSettings,
 } from "@minke/harness-overlay/plugin-recovery-contract.ts";
 import type {
-  ProductShortcutActionId,
-  ShortcutBindings,
-} from "@minke/harness-overlay/shortcut-contract.ts";
-import type {
   TabsLayoutState,
   TabsLayoutStateUpdate,
 } from "@minke/harness-overlay/tabs/contract.ts";
@@ -28,7 +24,6 @@ import type {
   FileManagerDiffResult,
   FileManagerListRequest,
   FileManagerListResult,
-  FileManagerOpenRequest,
   FileManagerPreviewRequest,
   FileManagerPreviewResult,
   FileManagerViewState,
@@ -40,7 +35,6 @@ import type {
   TerminalSettings,
 } from "@minke/harness-overlay/terminal-settings-contract.ts";
 import type {
-  AppUpdateCheckResult,
   AppUpdateSettings,
 } from "@minke/harness-overlay/app-update-contract.ts";
 import type {
@@ -77,23 +71,6 @@ import type {
   RemoteHubCommand,
   RemoteHubSnapshot,
 } from "@minke/harness-overlay/remote-hub-contract.ts";
-import type {
-  HarnessColorScheme,
-  HarnessLocale,
-  HarnessThemePreference,
-} from "../core/context.ts";
-
-export interface ShortcutStore {
-  readonly available: boolean;
-  read(): Promise<ShortcutBindings>;
-  write(bindings: ShortcutBindings): Promise<void>;
-}
-
-export interface DesktopShortcutPort extends ShortcutStore {
-  subscribe(
-    listener: (id: ProductShortcutActionId) => void,
-  ): () => void;
-}
 
 export interface TerminalSettingsStore {
   readonly available: boolean;
@@ -117,10 +94,6 @@ export interface BrowserSettingsStore {
   readonly available: boolean;
   read(): Promise<BrowserSettings>;
   write(settings: BrowserSettings): Promise<void>;
-}
-
-export interface AppUpdatePort extends AppUpdateSettingsStore {
-  check(): Promise<AppUpdateCheckResult>;
 }
 
 export interface ModelRuntimeSettingsStore {
@@ -169,19 +142,6 @@ export interface DesktopAboutInfo {
   readonly version: string;
   readonly platform: string;
   readonly arch: string;
-}
-
-export interface DesktopWindowThemePort {
-  readonly available: boolean;
-  publish(
-    preference: HarnessThemePreference,
-    colorScheme: HarnessColorScheme,
-  ): void;
-}
-
-export interface DesktopWindowLocalePort {
-  readonly available: boolean;
-  publish(locale: HarnessLocale): void;
 }
 
 export interface DesktopTabsPort {
@@ -239,8 +199,6 @@ export interface DesktopAgentBrowserPort {
 
 export interface DesktopFilesPort {
   readonly available: boolean;
-  /** Whether paths can be handed to the host operating system. */
-  readonly nativeOpenAvailable: boolean;
   /** Whether the port can publish external filesystem changes. */
   readonly watchAvailable: boolean;
   diff(
@@ -249,7 +207,6 @@ export interface DesktopFilesPort {
   list(
     request: FileManagerListRequest,
   ): Promise<FileManagerListResult>;
-  open(request: FileManagerOpenRequest): Promise<void>;
   preview(
     request: FileManagerPreviewRequest,
   ): Promise<FileManagerPreviewResult>;
@@ -266,11 +223,6 @@ export interface DesktopFilesPort {
   ): () => void;
 }
 
-export interface DesktopSessionLogsPort {
-  readonly available: boolean;
-  export(sessionId: string): Promise<void>;
-}
-
 /** Desktop recovery only. DSH's native page owns package management. */
 export interface PluginRecoveryPort {
   readonly available: boolean;
@@ -278,24 +230,6 @@ export interface PluginRecoveryPort {
   readSettings(): Promise<PluginManagementSettings>;
 }
 
-export interface DesktopShortcutBridge {
-  read(): Promise<unknown>;
-  write(bindings: ShortcutBindings): Promise<void>;
-  subscribe(
-    listener: (id: ProductShortcutActionId) => void,
-  ): () => void;
-}
-
-export interface DesktopWindowThemeBridge {
-  publish(
-    preference: HarnessThemePreference,
-    colorScheme: HarnessColorScheme,
-  ): void;
-}
-
-export interface DesktopWindowLocaleBridge {
-  publish(locale: HarnessLocale): void;
-}
 
 export interface DesktopTabsBridge {
   readLayoutState?(): Promise<unknown>;
@@ -349,7 +283,6 @@ export interface DesktopAgentBrowserBridge {
 export interface DesktopFilesBridge {
   diff(request: FileManagerDiffRequest): Promise<unknown>;
   list(request: FileManagerListRequest): Promise<unknown>;
-  open(request: FileManagerOpenRequest): Promise<void>;
   preview(request: FileManagerPreviewRequest): Promise<unknown>;
   write(request: FileManagerWriteRequest): Promise<unknown>;
   readViewState?(): Promise<unknown>;
@@ -368,7 +301,6 @@ export interface DesktopTerminalBridge {
 }
 
 export interface DesktopAppUpdateBridge {
-  check?(): Promise<unknown>;
   read(): Promise<unknown>;
   write(settings: AppUpdateSettings): Promise<void>;
 }
@@ -415,15 +347,10 @@ export interface DesktopPluginRecoveryBridge {
 
 export interface DesktopDataHomeBridge {
   read(): Promise<unknown>;
-  chooseDirectory(): Promise<string | undefined>;
   plan(request: DataHomeMigrationPlanRequest): Promise<unknown>;
   schedule(
     request: DataHomeMigrationScheduleRequest,
   ): Promise<unknown>;
-}
-
-export interface DesktopSessionLogsBridge {
-  export(sessionId: string): Promise<void>;
 }
 
 export interface DesktopSurfaceBridge {
@@ -439,6 +366,9 @@ export interface DesktopAboutBridge {
 
 /** Shape exposed by the isolated Electron preload. */
 export interface DesktopBridgeWindow {
+  __DSH_DIRECTORY_PICKER__?: {
+    pick(): Promise<string | null>;
+  };
   minkeDesktop?: {
     agentBrowser?: DesktopAgentBrowserBridge;
     appUpdate?: DesktopAppUpdateBridge;
@@ -446,17 +376,13 @@ export interface DesktopBridgeWindow {
     browser?: DesktopBrowserBridge;
     dataHome?: DesktopDataHomeBridge;
     files?: DesktopFilesBridge;
-    locale?: DesktopWindowLocaleBridge;
     modelRuntime?: DesktopModelRuntimeBridge;
     pluginRecovery?: DesktopPluginRecoveryBridge;
     remote?: DesktopRemoteBridge;
     remoteHub?: DesktopRemoteHubBridge;
-    sessionLogs?: DesktopSessionLogsBridge;
     tabs?: DesktopTabsBridge;
     terminal?: DesktopTerminalBridge;
     webSearch?: DesktopWebSearchBridge;
-    shortcuts?: DesktopShortcutBridge;
     surface?: DesktopSurfaceBridge;
-    windowTheme?: DesktopWindowThemeBridge;
   };
 }

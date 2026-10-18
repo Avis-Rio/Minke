@@ -12,17 +12,23 @@ export interface HarnessPermissionRequest {
   harnessUrl: string | undefined;
   requestingWebContents: unknown;
   activeWebContents: unknown;
+  isMainFrame?: boolean;
+  mediaTypes?: readonly string[];
 }
 
 /**
- * Grant the one browser permission Minke needs only to the active Harness
- * renderer. Same-origin popups and every other permission remain untrusted.
+ * Grant clipboard writes and main-frame audio only to the active Harness
+ * renderer. Microphone access additionally requires operating-system consent.
  */
 export function canGrantHarnessPermission(
   request: HarnessPermissionRequest,
 ): boolean {
   if (
-    request.permission !== HARNESS_CLIPBOARD_WRITE_PERMISSION ||
+    (request.permission !== HARNESS_CLIPBOARD_WRITE_PERMISSION &&
+      !(request.permission === "media" &&
+        request.isMainFrame === true &&
+        request.mediaTypes?.length === 1 &&
+        request.mediaTypes[0] === "audio")) ||
     request.candidateUrl === undefined ||
     request.harnessUrl === undefined ||
     request.requestingWebContents === null ||
@@ -43,6 +49,10 @@ export function canGrantHarnessPermission(
 export interface HarnessPermissionSources {
   harnessUrl(): string | undefined;
   activeWebContents(): WebContents | undefined;
+  microphone?: {
+    isGranted(): boolean;
+    request(): Promise<boolean>;
+  };
 }
 
 /** Install the fail-closed main-renderer policy on one Electron session. */
@@ -62,18 +72,33 @@ export function installHarnessPermissionPolicy(
         harnessUrl: sources.harnessUrl(),
         requestingWebContents: webContents,
         activeWebContents: sources.activeWebContents(),
-      }),
+        isMainFrame: details.isMainFrame,
+        mediaTypes: details.mediaType === undefined ? [] : [details.mediaType],
+      }) && (permission !== "media" || sources.microphone?.isGranted() === true),
   );
   target.setPermissionRequestHandler(
-    (webContents, permission, callback, details) =>
-      callback(
+    (webContents, permission, callback, details) => {
+      const allowed = (candidateUrl = details.requestingUrl) =>
         canGrantHarnessPermission({
           permission,
-          candidateUrl: details.requestingUrl,
+          candidateUrl,
           harnessUrl: sources.harnessUrl(),
           requestingWebContents: webContents,
           activeWebContents: sources.activeWebContents(),
-        }),
-      ),
+          isMainFrame: details.isMainFrame,
+          mediaTypes: "mediaTypes" in details ? details.mediaTypes : undefined,
+        });
+      const trusted = allowed();
+      if (!trusted || permission !== "media") {
+        callback(trusted);
+        return;
+      }
+      const microphone = sources.microphone;
+      if (microphone === undefined) { callback(false); return; }
+      void Promise.resolve().then(() => microphone.request()).then(
+        granted => callback(granted && !webContents.isDestroyed() && allowed(webContents.getURL())),
+        () => callback(false),
+      );
+    },
   );
 }

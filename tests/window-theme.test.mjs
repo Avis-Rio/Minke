@@ -9,23 +9,17 @@ import { WINDOW_THEME_CHANNEL } from "@minke/desktop/window-theme-contract.ts";
 function fixture() {
   const ipc = new EventEmitter();
   const nativeTheme = { themeSource: "system" };
-  const binding = bindWindowTheme({ webContents: { ipc } }, nativeTheme);
+  const binding = bindWindowTheme({ webContents: { ipc } }, nativeTheme, event => event !== "denied");
   return { binding, ipc, nativeTheme };
 }
 
 test("explicit renderer themes update the native window appearance", () => {
   const { binding, ipc, nativeTheme } = fixture();
 
-  ipc.emit(WINDOW_THEME_CHANNEL, {}, {
-    preference: "dark",
-    colorScheme: "dark",
-  });
+  ipc.emit(WINDOW_THEME_CHANNEL, {}, "dark");
   assert.equal(nativeTheme.themeSource, "dark");
 
-  ipc.emit(WINDOW_THEME_CHANNEL, {}, {
-    preference: "light",
-    colorScheme: "light",
-  });
+  ipc.emit(WINDOW_THEME_CHANNEL, {}, "light");
   assert.equal(nativeTheme.themeSource, "light");
   binding.dispose();
 });
@@ -33,27 +27,28 @@ test("explicit renderer themes update the native window appearance", () => {
 test("system preference leaves native chrome connected to the OS", () => {
   const { binding, ipc, nativeTheme } = fixture();
 
-  ipc.emit(WINDOW_THEME_CHANNEL, {}, {
-    preference: "system",
-    colorScheme: "dark",
-  });
+  ipc.emit(WINDOW_THEME_CHANNEL, {}, "system");
   assert.equal(nativeTheme.themeSource, "system");
-  ipc.emit(WINDOW_THEME_CHANNEL, {}, {
-    preference: "system",
-    colorScheme: "light",
-  });
+  ipc.emit(WINDOW_THEME_CHANNEL, {}, "system");
 
   assert.equal(nativeTheme.themeSource, "system");
   binding.dispose();
 });
 
-test("early resolved schemes cover pre-plugin theme bootstrap", () => {
+test("native theme follows DSH's published source without a product theme snapshot", () => {
+  const { binding, ipc, nativeTheme } = fixture();
+  ipc.emit(WINDOW_THEME_CHANNEL, {}, "dark");
+  assert.equal(nativeTheme.themeSource, "dark");
+  ipc.emit(WINDOW_THEME_CHANNEL, {}, "system");
+  assert.equal(nativeTheme.themeSource, "system");
+  binding.dispose();
+});
+
+test("unowned frames cannot change the native appearance", () => {
   const { binding, ipc, nativeTheme } = fixture();
 
-  ipc.emit(WINDOW_THEME_CHANNEL, {}, { colorScheme: "dark" });
-  assert.equal(nativeTheme.themeSource, "dark");
-  ipc.emit(WINDOW_THEME_CHANNEL, {}, { colorScheme: "light" });
-  assert.equal(nativeTheme.themeSource, "light");
+  ipc.emit(WINDOW_THEME_CHANNEL, "denied", "dark");
+  assert.equal(nativeTheme.themeSource, "system");
   binding.dispose();
 });
 
@@ -62,6 +57,8 @@ test("invalid renderer messages cannot change the native appearance", () => {
 
   for (const message of [
     null,
+    "sepia",
+    { colorScheme: "dark" },
     { colorScheme: "sepia" },
     {},
     { colorScheme: "dark", extra: true },
@@ -81,10 +78,7 @@ test("disposing the binding stops later renderer updates", () => {
 
   binding.dispose();
   binding.dispose();
-  ipc.emit(WINDOW_THEME_CHANNEL, {}, {
-    preference: "dark",
-    colorScheme: "dark",
-  });
+  ipc.emit(WINDOW_THEME_CHANNEL, {}, "dark");
 
   assert.equal(nativeTheme.themeSource, "system");
   assert.equal(ipc.listenerCount(WINDOW_THEME_CHANNEL), 0);
@@ -102,6 +96,7 @@ test("theme binding can dispose after its BrowserWindow is destroyed", () => {
   const binding = bindWindowTheme(
     window,
     { themeSource: "system" },
+    () => true,
   );
 
   destroyed = true;
