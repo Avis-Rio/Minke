@@ -10,9 +10,9 @@ const projectRoot = resolve(
   "../..",
 );
 
-function visit(node, callback) {
+function visit(node, callback, parent, field) {
   if (node === null || typeof node !== "object") return;
-  if (typeof node.type === "string") callback(node);
+  if (typeof node.type === "string" && callback(node, parent, field) === false) return;
   for (const [key, value] of Object.entries(node)) {
     if (
       key === "end" ||
@@ -23,19 +23,11 @@ function visit(node, callback) {
       continue;
     }
     if (Array.isArray(value)) {
-      for (const child of value) visit(child, callback);
+      for (const child of value) visit(child, callback, node, key);
       continue;
     }
-    visit(value, callback);
+    visit(value, callback, node, key);
   }
-}
-
-function contains(node, predicate) {
-  let found = false;
-  visit(node, (candidate) => {
-    if (!found && predicate(candidate)) found = true;
-  });
-  return found;
 }
 
 function propertyName(node) {
@@ -88,12 +80,75 @@ function bindingNames(pattern) {
   return [];
 }
 
+/** Resolve identifiers by lexical binding, including closures and shadowing. */
+function lexicalBindings(ast) {
+  const scopes = new WeakMap();
+  const createScope = (parent, functionScope = false) => ({
+    parent, functionScope, bindings: new Map(),
+  });
+  const declare = (scope, pattern) => {
+    for (const name of bindingNames(pattern)) {
+      if (!scope.bindings.has(name)) scope.bindings.set(name, { name });
+    }
+  };
+  const root = createScope(undefined, true);
+  visit(ast, (node, parent) => {
+    let scope = scopes.get(parent) ?? root;
+    if (node.type === "FunctionDeclaration" || node.type === "ClassDeclaration") {
+      declare(scope, node.id);
+    }
+    if (/^(?:FunctionDeclaration|FunctionExpression|ArrowFunctionExpression)$/u.test(node.type)) {
+      const enclosing = scope;
+      scope = createScope(scope, true);
+      declare(scope, node.id);
+      if (node.type === "FunctionDeclaration" && node.id !== null) {
+        scope.bindings.set(node.id.name, enclosing.bindings.get(node.id.name));
+      }
+      for (const parameter of node.params) declare(scope, parameter);
+    } else if (/^(?:BlockStatement|CatchClause|ForStatement|ForInStatement|ForOfStatement|SwitchStatement|ClassDeclaration|ClassExpression|StaticBlock)$/u.test(node.type)) {
+      scope = createScope(scope, node.type === "StaticBlock");
+      if (node.type === "CatchClause") declare(scope, node.param);
+      if (node.type === "ClassExpression") declare(scope, node.id);
+    }
+    scopes.set(node, scope);
+    if (node.type === "VariableDeclaration") {
+      let owner = scope;
+      if (node.kind === "var") {
+        while (!owner.functionScope) owner = owner.parent;
+      }
+      for (const declaration of node.declarations) declare(owner, declaration.id);
+    } else if (node.type === "ImportDeclaration") {
+      for (const specifier of node.specifiers) declare(scope, specifier.local);
+    }
+  });
+  return (name, node) => {
+    for (let scope = scopes.get(node); scope !== undefined; scope = scope.parent) {
+      if (scope.bindings.has(name)) return scope.bindings.get(name);
+    }
+    return undefined;
+  };
+}
+
+function isValueReference(node, parent, field) {
+  if (node.type !== "Identifier") return false;
+  if (parent?.type === "MemberExpression" && field === "property" && !parent.computed) return false;
+  if (["Property", "MethodDefinition", "PropertyDefinition"].includes(parent?.type) &&
+      field === "key" && !parent.computed) return false;
+  return field !== "label";
+}
+
 function sourceBindings(ast) {
+  const resolveBinding = lexicalBindings(ast);
   const candidates = [];
+  const functions = new Map();
   visit(ast, (node) => {
     if (node.type === "VariableDeclarator" && node.init !== null) {
+      if (node.id.type === "Identifier" &&
+          ["ArrowFunctionExpression", "FunctionExpression"].includes(node.init.type)) {
+        functions.set(resolveBinding(node.id.name, node), node.init);
+      }
       candidates.push({
-        names: bindingNames(node.id),
+        bindings: bindingNames(node.id).map(name => resolveBinding(name, node)),
         value: node.init,
       });
       return;
@@ -103,7 +158,7 @@ function sourceBindings(ast) {
       node.operator === "="
     ) {
       candidates.push({
-        names: bindingNames(node.left),
+        bindings: bindingNames(node.left).map(name => resolveBinding(name, node)),
         value: node.right,
       });
       return;
@@ -112,36 +167,54 @@ function sourceBindings(ast) {
       node.type === "FunctionDeclaration" &&
       node.id !== null
     ) {
+      functions.set(resolveBinding(node.id.name, node), node);
       candidates.push({
-        names: [node.id.name],
+        bindings: [resolveBinding(node.id.name, node)],
         value: node.body,
       });
     }
   });
+  visit(ast, node => {
+    if (node.type !== "CallExpression" || node.callee.type !== "Identifier") return;
+    const fn = functions.get(resolveBinding(node.callee.name, node));
+    if (fn === undefined) return;
+    fn.params.forEach((parameter, index) => {
+      const value = parameter.type === "RestElement"
+        ? { type: "ArrayExpression", elements: node.arguments.slice(index) }
+        : node.arguments[index];
+      if (value === undefined) return;
+      candidates.push({
+        bindings: bindingNames(parameter).map(name => resolveBinding(name, fn)),
+        value,
+      });
+    });
+  });
 
   const tainted = new Set();
+  const containsSource = value => {
+    let found = false;
+    visit(value, (node, parent, field) => {
+      // Assertions on parsed configuration are data contracts, not text checks.
+      if (node.type === "CallExpression" && propertyName(node.callee) === "parse" &&
+          node.callee.object?.type === "Identifier" && node.callee.object.name === "JSON") return false;
+      if (isFileRead(node) || (isValueReference(node, parent, field) &&
+          tainted.has(resolveBinding(node.name, node)))) found = true;
+    });
+    return found;
+  };
   let changed = true;
   while (changed) {
     changed = false;
     for (const candidate of candidates) {
-      if (
-        !contains(candidate.value, isFileRead) &&
-        !contains(
-          candidate.value,
-          (node) =>
-            node.type === "Identifier" && tainted.has(node.name),
-        )
-      ) {
-        continue;
-      }
-      for (const name of candidate.names) {
-        if (tainted.has(name)) continue;
-        tainted.add(name);
+      if (!containsSource(candidate.value)) continue;
+      for (const binding of candidate.bindings) {
+        if (binding === undefined || tainted.has(binding)) continue;
+        tainted.add(binding);
         changed = true;
       }
     }
   }
-  return tainted;
+  return containsSource;
 }
 
 function isAssertMatch(node) {
@@ -167,23 +240,12 @@ export function auditSourceTextAssertions(
     locations: true,
     sourceType: "module",
   });
-  const tainted = sourceBindings(ast);
+  const containsSource = sourceBindings(ast);
   const findings = [];
   visit(ast, (node) => {
     if (!isAssertMatch(node)) return;
     const [actual] = node.arguments;
-    if (
-      actual === undefined ||
-      (
-        !contains(actual, isFileRead) &&
-        !contains(
-          actual,
-          (candidate) =>
-            candidate.type === "Identifier" &&
-            tainted.has(candidate.name),
-        )
-      )
-    ) {
+    if (actual === undefined || !containsSource(actual)) {
       return;
     }
     findings.push({

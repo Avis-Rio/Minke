@@ -423,8 +423,8 @@ test("the model runtime uses DSH services and keeps local secrets out of profile
   assert.match(modelRuntimeBundle, /ensure-running/u);
   assert.match(modelRuntimeBundle, /openAICompatible/u);
   assert.match(modelRuntimeBundle, /\/api\/v1\/models/u);
-  assert.match(modelRuntimeBundle, /ctx\.on\(\s*"llm\/stream"/u);
-  assert.match(modelRuntimeBundle, /LM_STUDIO_CONTEXT_TOO_SMALL/u);
+  // Native adapter capacity, cancellation and retry behavior are exercised by
+  // model-runtime-startup.test.mjs; the retired stream hook is not a contract.
   assert.doesNotMatch(
     modelRuntimeBundle,
     /node:child_process|execFile|spawnSync|settings\.(?:update|mutate)/u,
@@ -630,10 +630,8 @@ test("About uses the public sidebar action and packaged desktop metadata", () =>
     aboutStylesSource,
     /\.minke-about__actions\s*\{[\s\S]*justify-content:\s*center[\s\S]*margin:\s*0/u,
   );
-  assert.match(
-    aboutStylesSource,
-    /\.minke-about\[data-wide="true"\]\s*\{[\s\S]*position:\s*absolute[\s\S]*bottom:\s*7px/u,
-  );
+  // Footer alignment is checked at multiple row heights in Electron by
+  // about-update-layout-runtime.cjs, rather than fixing a CSS pixel offset.
   assert.match(
     aboutStylesSource,
     /\[data-slot="sidebar\.settings"\]\)\s*\{[\s\S]*padding-right:\s*40px/u,

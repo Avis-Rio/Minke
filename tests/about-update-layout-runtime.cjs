@@ -7,6 +7,7 @@ const { join } = require('node:path');
 const { app, BrowserWindow } = require('electron');
 const { buildSync } = require('esbuild');
 
+app.on('window-all-closed', () => {});
 const projectRoot = join(__dirname, '..');
 
 async function waitFor(window, predicate, label) {
@@ -37,6 +38,7 @@ function aboutBundle() {
     import { AboutDialog } from "./packages/harness-overlay/src/client/about/view.tsx";
     import { en } from "./packages/harness-overlay/src/client/about/locales.ts";
     import aboutStyles from "./packages/harness-overlay/src/client/about/styles.css";
+    import sidebarStyles from "./vendor/deepseek-harness/packages/client/ui-sidebar/src/client/SidebarRoot.module.css";
 
     const style = document.createElement("style");
     style.textContent = aboutStyles;
@@ -53,20 +55,31 @@ function aboutBundle() {
     const openUpdates = () => { globalThis.updateOpens++; };
 
     createRoot(document.getElementById("root")).render(
-      <AboutDialog
-        openUpdates={openUpdates}
-        iconUrl="data:image/gif;base64,R0lGODlhAQABAAAAACw="
-        info={{
-          available: true,
-          productName: "Minke",
-          version: "0.2.0",
-          platform: "darwin",
-          arch: "arm64",
-        }}
-        openExternal={() => {}}
-        t={t}
-        wide={true}
-      />,
+      <div id="sidebar-footer" className={sidebarStyles.footArea}>
+        <div className={sidebarStyles.footerActions}>
+          <div data-slot="sidebar.footer.action">
+            <AboutDialog
+              openUpdates={openUpdates}
+              iconUrl="data:image/gif;base64,R0lGODlhAQABAAAAACw="
+              info={{
+                available: true,
+                productName: "Minke",
+                version: "0.2.0",
+                platform: "darwin",
+                arch: "arm64",
+              }}
+              openExternal={() => {}}
+              t={t}
+              wide={true}
+            />
+          </div>
+        </div>
+        <div className={sidebarStyles.settingsArea}>
+          <div data-slot="sidebar.settings">
+            <button id="settings-button">Settings</button>
+          </div>
+        </div>
+      </div>,
     );
   `;
   const result = buildSync({
@@ -185,6 +198,13 @@ async function run() {
             position: relative;
             z-index: 1;
           }
+          #settings-button {
+            display: block;
+            width: 100%;
+            height: var(--fixture-settings-height, 44px);
+            border: 0;
+            text-align: left;
+          }
           #competing-bottom-panel {
             position: fixed;
             z-index: 2;
@@ -218,6 +238,21 @@ async function run() {
       'document.querySelector("[data-minke-about-trigger]") !== null',
       'About trigger',
     );
+    for (const height of [44, 64]) {
+      const footer = await window.webContents.executeJavaScript(`
+        (() => {
+          document.documentElement.style.setProperty('--fixture-settings-height', '${height}px');
+          const about = document.querySelector('[data-minke-about-trigger]').getBoundingClientRect();
+          const settings = document.querySelector('#settings-button').getBoundingClientRect();
+          const foot = document.querySelector('#sidebar-footer').getBoundingClientRect();
+          return { offset: about.y + about.height / 2 - settings.y - settings.height / 2,
+            separated: settings.right <= about.left, contained: about.right <= foot.right };
+        })()
+      `);
+      assert.ok(Math.abs(footer.offset) <= 0.25, `About must stay centered beside a ${height}px Settings row`);
+      assert.equal(footer.separated, true, 'About and Settings hit targets must not overlap');
+      assert.equal(footer.contained, true, 'About stays inside the sidebar footer');
+    }
     await window.webContents.executeJavaScript(
       'document.querySelector("[data-minke-about-trigger]").click()',
     );
@@ -260,11 +295,10 @@ async function run() {
   } finally {
     window.destroy();
     await rm(fixtureDirectory, { recursive: true, force: true });
-    app.quit();
   }
 }
 
-run().catch((error) => {
+run().then(() => app.quit()).catch((error) => {
   console.error(error);
   app.exit(1);
 });

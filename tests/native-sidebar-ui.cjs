@@ -709,6 +709,7 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
   pressEnter();
   await waitFor(async () => (await readFile(join(workspace, 'dsh-terminal-retention.txt'), 'utf8')).trim() === 'assigned', 'native shell variable assignment');
   const checkShellState = async () => {
+    await writeFile(join(workspace, 'dsh-terminal-retention.txt'), 'waiting');
     await click(`[data-dockkit-tab="${terminalId}"]`);
     await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-right-panel] [data-sidebar-terminal] .xterm-helper-textarea') !== null && document.querySelector('[data-sidebar-right-panel] [data-sidebar-terminal] [role="status"]') === null`), 'reconnected native terminal');
     await click('[data-sidebar-right-panel] [data-sidebar-terminal] .xterm-screen');
@@ -717,7 +718,16 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
       ? 'echo %minke_sidebar_state% > dsh-terminal-retention.txt'
       : 'printf "%s" "$minke_sidebar_state" > dsh-terminal-retention.txt');
     pressEnter();
-    await waitFor(async () => (await readFile(join(workspace, 'dsh-terminal-retention.txt'), 'utf8')).trim() === 'retained', 'same native shell state');
+    try {
+      await waitFor(async () => (await readFile(join(workspace, 'dsh-terminal-retention.txt'), 'utf8')).trim() === 'retained', 'same native shell state');
+    } catch (error) {
+      const actual = await readFile(join(workspace, 'dsh-terminal-retention.txt'), 'utf8');
+      const terminal = await rendererValue(window, `() => {
+        const root = document.querySelector('[data-sidebar-right-panel] [data-sidebar-terminal]');
+        return { focused: root?.contains(document.activeElement), text: root?.querySelector('.xterm-rows')?.textContent.slice(-1600) };
+      }`);
+      throw new Error(JSON.stringify({ expected: 'retained', actual, terminal }), { cause: error });
+    }
   };
   process.stdout.write('[sidebar-ui] live native Terminal command passed\n');
 
@@ -819,7 +829,6 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
   // persisted layout. File drafts keep their baseline; native shells reconnect.
   await click(`[data-minke-tab-title="${fileId}"]`);
   const draft = await rendererValue(window, `() => document.querySelector('.minke-tabs-native-host[data-kind="files"] .cm-content').textContent`);
-  await writeFile(join(workspace, 'dsh-terminal-retention.txt'), 'before refresh');
   window.webContents.reload();
   await waitFor(() => rendererValue(window, `() => document.querySelector('[data-minke-tab-title="${fileId}"]') !== null`), 'restored Files tab identity', 30_000);
   await click(`[data-minke-tab-title="${fileId}"]`);
