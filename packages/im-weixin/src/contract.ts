@@ -126,7 +126,7 @@ export interface WeixinNetworkPolicy {
 }
 
 export interface WeixinClientMetadata {
-  /** Observability-only bot identity, for example `Minke/0.8.0`. */
+  /** Observability-only bot identity, for example `Minke/0.9.0`. */
   readonly botAgent?: string;
   /** Wire-compatible channel release. Defaults to the audited upstream release. */
   readonly channelVersion?: string;
