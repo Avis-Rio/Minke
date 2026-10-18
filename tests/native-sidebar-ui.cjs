@@ -63,9 +63,14 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
       for (const block of ['nearest', 'center']) {
         button.scrollIntoView({ block, inline: 'nearest', behavior: 'instant' });
         const rect = button.getBoundingClientRect();
-        const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+        // A compact tab's close control can cover its center once hovered.
+        // Select from the leading area; explicit close-button clicks stay centered.
+        const selectingTab = button.matches('[data-dockkit-tab]');
+        const x = rect.left + (selectingTab ? Math.min(10, rect.width / 4) : rect.width / 2);
+        const y = rect.top + rect.height / 2;
         const hit = document.elementFromPoint(x, y);
-        if (hit && (hit === button || button.contains(hit))) return { x: Math.round(x), y: Math.round(y) };
+        if (hit && (hit === button || button.contains(hit)) &&
+            !(selectingTab && hit.closest('[data-dockkit-tab-close]'))) return { x: Math.round(x), y: Math.round(y) };
       }
       return false;
       }`);
@@ -76,7 +81,8 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
       return await rendererValue(window, `() => new Promise(resolve => requestAnimationFrame(() => {
         const button = document.querySelectorAll(${JSON.stringify(selector)})[${index}];
         const hit = document.elementFromPoint(${candidate.x}, ${candidate.y});
-        resolve(button?.matches(':hover') && button.contains(hit));
+        resolve(button?.matches(':hover') && button.contains(hit) &&
+          !(button.matches('[data-dockkit-tab]') && hit.closest('[data-dockkit-tab-close]')));
       }))`) ? candidate : false;
     }, `clickable ${selector}`, 8_000).catch(async error => {
       const targets = await rendererValue(window, `() => [...document.querySelectorAll(${JSON.stringify(selector)})].map(button => {
@@ -89,16 +95,8 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
       throw new Error(`Click target unavailable: ${JSON.stringify({ selector, index, targets })}`, { cause: error });
     });
     if (!window.isFocused()) await focusWindow();
-    // Use the same acknowledged pointer sequence as the native drag test
-    // before checking the resulting control or tab state.
-    const input = window.webContents.debugger;
-    input.attach('1.3');
-    try {
-      await input.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });
-      await input.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 });
-    } finally {
-      input.detach();
-    }
+    window.webContents.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
+    window.webContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
   };
   const assertHeaderAlignment = async state => {
     await verifyWindowDrag({ window, rendererValue }, state);
@@ -996,6 +994,13 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
       await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-right-panel][data-sidebar-right-open]') !== null`), 'shared Sidebar shortcut reopens the Session panel');
       assert.equal(await checkDiscoveryGuest(), discoveryGuestId, 'shared Sidebar shortcut restores the selected native tab');
       await rendererValue(window, `() => {
+        // Reproduce the Windows hit result: a hovered close control can cover
+        // the center of a compact tab. Selection must use the tab's own area.
+        const tab = document.querySelector('[data-dockkit-tab="${startId}"]');
+        tab.style.boxSizing = 'border-box';
+        tab.style.minWidth = '40px';
+        tab.style.maxWidth = '40px';
+        if (tab.getBoundingClientRect().width !== 40) throw new Error('Compact tab fixture must be 40px wide');
         window.__minkeStartPointerEvents = [];
         window.__minkeStartPointerObserver = new AbortController();
         for (const type of ['pointerdown', 'pointerup', 'pointercancel', 'click']) {
@@ -1018,6 +1023,9 @@ async function verifyNativeSidebarUI({ window, harnessUrl, fixtureUrl, rendererV
         }`);
         throw new Error(error.message + '; Start click=' + JSON.stringify(state), { cause: error });
       }).finally(() => rendererValue(window, `() => { window.__minkeStartPointerObserver.abort(); return true; }`));
+      assert.equal(await rendererValue(window, `() => window.__minkeStartPointerEvents.some(event =>
+        event.type === 'click' && event.trusted && event.tab === '${startId}' && event.close === undefined
+      )`), true, 'native pointer selects the compact tab without hitting its close control');
     }
     await waitFor(() => rendererValue(window, `() => document.querySelector('[data-sidebar-right-guide-entry="terminal"]')?.checkVisibility({ checkVisibilityCSS: true }) && document.querySelector('[data-sidebar-right-guide-entry="files"]')?.checkVisibility({ checkVisibilityCSS: true })`), entry + ' opens the native Start entries').catch(async error => {
       const state = await rendererValue(window, `() => ({
